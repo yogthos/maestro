@@ -1,0 +1,8 @@
+{:paths ["src"]
+ :deps  {org.clojure/clojure                      {:mvn/version "1.11.1"}
+         org.babashka/sci                         {:mvn/version "0.3.2"}
+         metosin/malli                            {:mvn/version "0.10.1"}}
+ :aliases
+ {:test {:extra-paths ["test"]
+         :extra-deps  {lambdaisland/kaocha {:mvn/version "1.75.1190"}}
+         :main-opts   ["-m" "kaocha.runner"]}}}

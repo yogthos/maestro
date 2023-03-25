@@ -1,0 +1,2 @@
+{:fsm {:maestro.core/start {:handler :foo
+                            :dispatches [[:maestro.core/end (fn [{:keys [v]}] (= v 5))]]}}}
