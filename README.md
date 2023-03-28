@@ -12,6 +12,15 @@ The problem being solved can be expressed in terms of a workflow represented by 
 
 Maestro implements the above architecture using a map to describe overall state, then pass it through agraph of functions that produce a new state. Each function takes the state map as a parameter, does some operations on it, and then returns a new map that gets passed to the next function.
 
+### Installation
+
+Add the following dependency to your project:
+
+```clojure
+{:deps {io.github.yogthos/maestro {:git/tag "v0.1.0" 
+                                   :git/sha "bcacf5a"}}}
+```
+
 ### Usage
 
 The state machine is defined using a map where the identified for each state points to the handler for that state:
