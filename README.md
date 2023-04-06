@@ -1,5 +1,8 @@
 ## Maestro
 
+
+![build status](https://github.com/yogthos/maestro/actions/workflows/main.yml/badge.svg)
+
 Maestro is a state machine runner for expressing workflows.
 
 While the idea of writing applications in a pure functional style is appealing, it's not always clear how to separate side effects from pure compuation in practice. Variations of Clean Architecture approach are often suggested as a way to accomplish this goal. This style dictates that IO should be handled in the outer layer that wraps pure computation core of the application.
