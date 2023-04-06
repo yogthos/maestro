@@ -46,7 +46,7 @@ Maestro uses four special states that represent the start, halt, end, and error 
 
 * `:maestro.core/start` - initial state the FSM is placed in
 * `:maestro.core/end` - the end state when the execution stops
-* * `:maestro.core/halt` - returns the state of the FSM that can be restarted
+* `:maestro.core/halt` - returns the state of the FSM that can be restarted
 * `:maestro.core/error` - error state when the execution stops
 
 The spec is compiled using `maestro.core/compile` and then executed using `maestro.core/run`.
