@@ -121,3 +121,19 @@
           :ready? true})
       (is)))
 
+(deftest subscriptions-test
+  (let [x (atom nil)]
+    (fsm/run
+     (fsm/compile {:fsm  {::fsm/start {:handler    (fn [data]
+                                                     (assoc data :foo :bar))
+                                       :dispatches [[:foo (constantly true)]]}
+                          :foo       {:handler    (fn [data]
+                                                    (update-in data [:x :y] inc))
+                                      :dispatches [[:bar (constantly true)]]}
+                          :bar       {:handler    (fn [data cb _err] (cb (update-in data [:x :y] inc)))
+                                      :async?     true
+                                      :dispatches [[::fsm/end (constantly true)]]}}
+                   :opts {:subscriptions {[:x :y] {:handler (fn [path v] (reset! x {path v}))}}}})
+     {:x {:y 1}})
+    (is (= @x {[:x :y] 3}))))
+

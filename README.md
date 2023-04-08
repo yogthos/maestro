@@ -1,6 +1,5 @@
 ## Maestro
 
-
 ![build status](https://github.com/yogthos/maestro/actions/workflows/main.yml/badge.svg)
 
 Maestro is a state machine runner for expressing workflows.
@@ -57,7 +56,9 @@ The spec contains the following keys:
 * `:last-state-id` - the last state that FSM was in
 * `:data` - initial data the FSM will operate on
 * `:trace` - the log of states that the FSM transitioned through (defaults to 1000)
-* `:opts` - metadata, currently has `:max-trace` to indicate custom trace size
+* `:opts` - metadata
+  *  `:max-trace` - indicates custom trace size
+  *  `:subscriptions` - subscriptions to state changes for executing side effects
 
 ### Complete example
 
@@ -81,7 +82,19 @@ The spec contains the following keys:
                                       [::fsm/start (constantly true)]]}}
       :opts {:max-trace 10}})
     (fsm/run {:foo :bar}))
-=> {:foo :bar, :count 4}   
+=> {:foo :bar, :count 4}
+
+;; subscription handler
+(fsm/run
+ (fsm/compile {:fsm  {::fsm/start {:handler    (fn [data]
+                                                 (assoc data :foo :bar))
+                                   :dispatches [[:foo (constantly true)]]}
+                      :foo       {:handler    (fn [data] (assoc-in data [:x :y] 3))
+                                  :dispatches [[::fsm/end (constantly true)]]}}
+               :opts {:subscriptions {[:x :y] {:handler (fn [path v] (println "path" path "value" v))}}}})
+ {:x {:y 1}})
+=> path [:x :y] value 3 ;; subscription handler output
+=> {:x {:y 3}, :foo :bar}
 
 ;; FSM that uses an async handler
 (-> (fsm/compile

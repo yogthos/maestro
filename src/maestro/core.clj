@@ -99,6 +99,19 @@
                              ::halt {:handler identity}
                              ::error {:handler error}})))))
 
+(defn run-subscriptions! [data subscriptions]
+  (when subscriptions
+    (reduce
+     (fn [m [path {:keys [value handler] :as sub}]]
+       (let [new-value (get-in data path)]
+         (if (= new-value value)
+           (assoc m path sub)
+           (do
+             (handler path new-value)
+             (assoc m path (assoc sub :value new-value))))))
+     {}
+     subscriptions)))
+
 (defn run
   "executes the FSM spec compiled using compile"
   ([{:keys [data] :as fsm}]
@@ -106,7 +119,7 @@
   ([{trace :trace
      fsm :fsm
      current-state-id :current-state-id
-     {:keys [max-trace] :or {max-trace 1000}} :opts
+     {:keys [max-trace subscriptions] :or {max-trace 1000}} :opts
      :or {current-state-id ::start trace []}} data]
    (let [queue (ArrayBlockingQueue. 1)]
      (.put queue
@@ -115,9 +128,15 @@
             :last-state-id    (last trace)
             :data             data
             :trace            trace
-            :opts             {:max-trace max-trace}})
-     (loop [{:keys [data current-state-id last-state-id] :as fsm} (.take queue)]
+            :opts             {:max-trace max-trace
+                               :subscriptions (reduce
+                                               (fn [m [path sub]] 
+                                                 (assoc m path (assoc sub :value (get-in data path))))
+                                               {}
+                                               subscriptions)}})
+     (loop [{:keys [data current-state-id last-state-id opts] :as fsm} (.take queue)]
        (let [{:keys [handler dispatches]} (get-in fsm [:fsm current-state-id])
+             fsm (assoc-in fsm [:opts :subscriptions] (run-subscriptions! data (:subscriptions opts)))
              error-callback (fn [error]
                               (.put queue
                                     (-> (update fsm :trace add-trace-segment
