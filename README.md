@@ -19,8 +19,8 @@ Maestro implements the above architecture using a map to describe overall state,
 Add the following dependency to your project:
 
 ```clojure
-{:deps {io.github.yogthos/maestro {:git/tag "v0.1.0" 
-                                   :git/sha "bcacf5a"}}}
+{:deps {io.github.yogthos/maestro {:git/tag "v0.1.1" 
+                                   :git/sha "737cc97"}}}
 ```
 
 ### Usage
