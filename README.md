@@ -87,14 +87,17 @@ The spec contains the following keys:
 ;; subscription handler
 (fsm/run
  (fsm/compile {:fsm  {::fsm/start {:handler    (fn [data]
-                                                 (assoc data :foo :bar))
+                                                 (assoc data :x {:y 1}))
                                    :dispatches [[:foo (constantly true)]]}
-                      :foo       {:handler    (fn [data] (assoc-in data [:x :y] 3))
-                                  :dispatches [[::fsm/end (constantly true)]]}}
-               :opts {:subscriptions {[:x :y] {:handler (fn [path v] (println "path" path "value" v))}}}})
- {:x {:y 1}})
-=> path [:x :y] value 3 ;; subscription handler output
-=> {:x {:y 3}, :foo :bar}
+                      :foo        {:handler    (fn [data] (update-in data [:x :y] inc))
+                                   :dispatches [[::fsm/end (constantly true)]]}}
+               :opts {:subscriptions {[:x :y] {:handler (fn [path old-value new-value] 
+                                                          (println "path" path
+                                                                   "old value" old-value 
+                                                                   "new value" new-value ))}}}}))
+=> path [:x :y] old value nil new value 1 ;; subscription handler output
+=> path [:x :y] old value 1 new value 2 ;; subscription handler output
+=> {:x {:y 2}}
 
 ;; FSM that uses an async handler
 (-> (fsm/compile

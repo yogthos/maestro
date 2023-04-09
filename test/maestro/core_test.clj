@@ -133,7 +133,9 @@
                           :bar       {:handler    (fn [data cb _err] (cb (update-in data [:x :y] inc)))
                                       :async?     true
                                       :dispatches [[::fsm/end (constantly true)]]}}
-                   :opts {:subscriptions {[:x :y] {:handler (fn [path v] (reset! x {path v}))}}}})
+                   :opts {:subscriptions {[:x :y] {:handler (fn [path old-value new-value] 
+                                                              (reset! x {path [old-value new-value]}))}}}})
      {:x {:y 1}})
-    (is (= @x {[:x :y] 3}))))
+    (is (= @x {[:x :y] [2 3]}))))
+
 

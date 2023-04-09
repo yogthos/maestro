@@ -107,7 +107,7 @@
          (if (= new-value value)
            (assoc m path sub)
            (do
-             (handler path new-value)
+             (handler path value new-value)
              (assoc m path (assoc sub :value new-value))))))
      {}
      subscriptions)))
