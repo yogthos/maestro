@@ -57,8 +57,10 @@ The spec contains the following keys:
 * `:data` - initial data the FSM will operate on
 * `:trace` - the log of states that the FSM transitioned through (defaults to 1000)
 * `:opts` - metadata
-  *  `:max-trace` - indicates custom trace size
-  *  `:subscriptions` - subscriptions to state changes for executing side effects
+  * `:max-trace` - indicates custom trace size
+  * `:subscriptions` - subscriptions to state changes for executing side effects
+  * `:pre` - function called before the handler executes, accepts the current FSM state and returns it
+  * `:post` - function called after the handler executes, accepts the current FSM state and returns it
 
 ### Complete example
 
@@ -111,6 +113,32 @@ The spec contains the following keys:
                        :dispatches [[::fsm/end (constantly true)]]}}})
     (fsm/run))
 => {:count 4, :foo :bar}
+
+;; FSM with pre and post interceptors
+(fsm/run
+ (fsm/compile {:fsm  {::fsm/start {:handler    (fn [data] (update data :x inc))
+                                   :dispatches [[:foo (constantly true)]]}
+                      :foo       {:handler    (fn [data] (update data :x inc))
+                                  :dispatches [[::fsm/end (constantly true)]]}}
+               :opts {:pre  (fn [{:keys [current-state-id]
+                                  :as   fsm}]
+                              (println "pre" current-state-id)
+                              (update-in fsm [:data :pre] (fnil conj [])
+                                         {:pre  current-state-id
+                                          :time (System/currentTimeMillis)}))
+                      :post (fn [{:keys [current-state-id]
+                                  :as   fsm}]
+                              (update-in fsm [:data :post] (fnil conj [])
+                                         {:post current-state-id
+                                          :time (System/currentTimeMillis)}))}})
+ {:x 1})
+=> {:x 3
+    :pre [{:pre :maestro.core/start :time 1681995016315}
+          {:pre :foo, :time 1681995016316}
+          {:pre :maestro.core/end :time 1681995016316}]
+    :post [{:post :maestro.core/start :time 1681995016315}
+           {:post :foo, :time 1681995016316}
+           {:post :maestro.core/end :time 1681995016316}]}
 ```
 
 ### EDN Spec

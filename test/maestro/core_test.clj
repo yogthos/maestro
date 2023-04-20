@@ -138,4 +138,36 @@
      {:x {:y 1}})
     (is (= @x {[:x :y] [2 3]}))))
 
-
+(deftest pre-post-test
+  (->> (fsm/compile {:fsm {::fsm/start {:handler    (fn [data]
+                                                      (assoc data :foo :bar))
+                                        :dispatches [[:foo (constantly true)]]}
+                           :foo {:handler (fn [data] (assoc data :y 2))
+                                 :dispatches      [[:bar (constantly true)]]}
+                           :bar {:handler    (fn [data cb _err] (cb (assoc data :z 3)))
+                                 :async?      true
+                                 :dispatches [[::fsm/end (constantly true)]]}}
+                     :opts {:pre (fn [fsm] (assoc-in fsm [:data :pre-value] 1))
+:post (fn [fsm] (assoc-in fsm [:data :post-value] 2))}})
+       (fsm/run)
+       (= {:pre-value 1, :foo :bar, :post-value 2, :y 2, :z 3})
+       (is))
+  (->>
+   (fsm/run
+    (fsm/compile {:fsm  {::fsm/start {:handler    (fn [data] (update data :x inc))
+                                      :dispatches [[:foo (constantly true)]]}
+                         :foo       {:handler    (fn [data] (update data :x inc))
+                                     :dispatches [[::fsm/end (constantly true)]]}}
+                  :opts {:pre  (fn [{:keys [current-state-id]
+                                     :as   fsm}]
+                                 (update-in fsm [:data :pre] (fnil conj [])
+                                            {:pre current-state-id}))
+                         :post (fn [{:keys [current-state-id]
+                                     :as   fsm}]
+                                 (update-in fsm [:data :post] (fnil conj [])
+                                            {:post current-state-id}))}})
+    {:x 1})
+   (= {:x 3
+       :post [{:post :maestro.core/start} {:post :foo} {:post :maestro.core/end}]
+       :pre [{:pre :maestro.core/start} {:pre :foo} {:pre :maestro.core/end}]})
+   (is)))
