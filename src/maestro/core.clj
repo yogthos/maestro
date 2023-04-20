@@ -59,7 +59,7 @@
 (defn add-trace-segment [trace max-trace segment]
   (vec (take-last max-trace (conj trace segment))))
 
-(defn enqueue-next-state [queue {:keys [current-state-id opts] :as fsm} dispatches error-handler data] 
+(defn enqueue-next-state [queue {:keys [current-state-id opts] :as fsm} dispatches post error-handler data] 
   (let [target-id (ffirst (drop-while (fn [[_target selector]] (not (selector data))) dispatches))]
     (if (get-in fsm [:fsm target-id])
       (.put queue (-> fsm
@@ -69,7 +69,8 @@
                                :status   :success})
                       (assoc :current-state-id target-id 
                              :last-state-id current-state-id
-                             :data data)))
+                             :data data)
+                      (post)))
       (error-handler (ex-info "invalid target state transition" {:current-state-id current-state-id
                                                                  :target-state-id  target-id})))))
 
@@ -119,22 +120,25 @@
   ([{trace :trace
      fsm :fsm
      current-state-id :current-state-id
-     {:keys [max-trace subscriptions] :or {max-trace 1000}} :opts
-     :or {current-state-id ::start trace []}} data]
+     {:keys [max-trace subscriptions pre post] :or {max-trace 1000 pre identity post identity}} :opts
+     :or {current-state-id ::start
+          trace []}}
+    data]
    (let [queue (ArrayBlockingQueue. 1)]
      (.put queue
-           {:fsm              fsm
-            :current-state-id current-state-id
-            :last-state-id    (last trace)
-            :data             data
-            :trace            trace
-            :opts             {:max-trace max-trace
-                               :subscriptions (reduce
-                                               (fn [m [path sub]] 
-                                                 (assoc m path (assoc sub :value (get-in data path))))
-                                               {}
-                                               subscriptions)}})
-     (loop [{:keys [data current-state-id last-state-id opts] :as fsm} (.take queue)]
+           (post
+            {:fsm              fsm
+             :current-state-id current-state-id
+             :last-state-id    (last trace)
+             :data             data
+             :trace            trace
+             :opts             {:max-trace     max-trace
+                                :subscriptions (reduce
+                                                (fn [m [path sub]] 
+                                                  (assoc m path (assoc sub :value (get-in data path))))
+                                                {}
+                                                subscriptions)}}))
+     (loop [{:keys [data current-state-id last-state-id opts] :as fsm} (pre (.take queue))]
        (let [{:keys [handler dispatches]} (get-in fsm [:fsm current-state-id])
              fsm (assoc-in fsm [:opts :subscriptions] (run-subscriptions! data (:subscriptions opts)))
              error-callback (fn [error]
@@ -144,7 +148,7 @@
                                                 {:current-state-id current-state-id
                                                  :status           :error})
                                         (assoc :current-state-id ::error :error error))))
-             callback (partial enqueue-next-state queue fsm dispatches error-handler)] 
+             callback (partial enqueue-next-state queue fsm dispatches post error-handler)] 
          (cond
            (= ::end current-state-id)
            (handler fsm)
@@ -158,4 +162,4 @@
            :else
            (do
              (handler data callback error-callback)
-             (recur (.take queue)))))))))
+             (recur (pre (.take queue))))))))))
