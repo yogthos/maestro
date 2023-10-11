@@ -28,14 +28,14 @@ Add the following dependency to your project:
 The state machine is defined using a map where the identified for each state points to the handler for that state:
 
 ```clojure
-{:fsm {:foo {:handler (fn [state] (assoc state :foo :bar))
+{:fsm {:foo {:handler (fn [_resources state] (assoc state :foo :bar))
              :dispatches [[:maestro.core/end (constantly true)]]}}
  :opts {}}
 ```
 
 The state handler consists of a map containing the following keys:
 
-* `:handler` - the handler function accepts input state and return the updated state
+* `:handler` - the handler function accepts `resources` and input `state`, returns an updated state
 * `:dispatches` - a vector of dispatch targets along with functions that accept the current state and return a truthy value, the key associated with the first truthy return value will be executed
 * `:async?` - optional key to indicate that the handler is an async function
   
@@ -52,10 +52,6 @@ The spec is compiled using `maestro.core/compile` and then executed using `maest
 The spec contains the following keys:
 
 * `:fsm` - the FSM spec that will be executed
-* `:current-state-id` - the state from which the FSM will execute
-* `:last-state-id` - the last state that FSM was in
-* `:data` - initial data the FSM will operate on
-* `:trace` - the log of states that the FSM transitioned through (defaults to 1000)
 * `:opts` - metadata
   * `:max-trace` - indicates custom trace size
   * `:subscriptions` - subscriptions to state changes for executing side effects
@@ -69,29 +65,44 @@ The spec contains the following keys:
 
 ;; FSM that counts to 4 and return
 (-> (fsm/compile
-     {:fsm {::fsm/start {:handler    (fn [data]
+     {:fsm {::fsm/start {:handler    (fn [_resources data]
                                        (update data :count (fnil inc 0)))
                          :dispatches [[::fsm/end (fn [state] (> (:count state) 3))]
                                       [::fsm/start (constantly true)]]}}})
     (fsm/run))
 => {:count 4}
+```
 
+The `run` function has three aritys:
+
+* `[fsm]`, initializes `resources` and `state` to empty maps
+* `[fsm resources]`, initializes `state` to an empty map
+* `[fsm resoruces state]`
+
+The state map can contain the following keys:
+
+* `:current-state-id` - the state from which the FSM will execute
+* `:last-state-id` - the last state that FSM was in
+* `:data` - initial data the FSM will operate on
+* `:trace` - the log of states that the FSM transitioned through (defaults to 1000)
+
+```clojure
 ;; FSM that has an initial state and trace size
 (-> (fsm/compile
-     {:fsm {::fsm/start {:handler    (fn [data]
+     {:fsm {::fsm/start {:handler    (fn [_resources data]
                                        (update data :count (fnil inc 0)))
                          :dispatches [[::fsm/end (fn [state] (> (:count state) 3))]
                                       [::fsm/start (constantly true)]]}}
       :opts {:max-trace 10}})
-    (fsm/run {:foo :bar}))
+    (fsm/run {} {:data {:foo :bar}}))
 => {:foo :bar, :count 4}
 
 ;; subscription handler
 (fsm/run
- (fsm/compile {:fsm  {::fsm/start {:handler    (fn [data]
+ (fsm/compile {:fsm  {::fsm/start {:handler    (fn [_resources data]
                                                  (assoc data :x {:y 1}))
                                    :dispatches [[:foo (constantly true)]]}
-                      :foo        {:handler    (fn [data] (update-in data [:x :y] inc))
+                      :foo        {:handler    (fn [_resources data] (update-in data [:x :y] inc))
                                    :dispatches [[::fsm/end (constantly true)]]}}
                :opts {:subscriptions {[:x :y] {:handler (fn [path old-value new-value] 
                                                           (println "path" path
@@ -103,11 +114,11 @@ The spec contains the following keys:
 
 ;; FSM that uses an async handler
 (-> (fsm/compile
-     {:fsm {::fsm/start {:handler    (fn [data]
+     {:fsm {::fsm/start {:handler    (fn [_resources data]
                                        (update data :count (fnil inc 0)))
                          :dispatches [[:foo (fn [state] (> (:count state) 3))]
                                       [::fsm/start (constantly true)]]}
-            :foo      {:handler (fn [data callback _error-callback]
+            :foo      {:handler (fn [_resources data callback _error-callback]
                                   (callback (assoc data :foo :bar)))
                        :async? true
                        :dispatches [[::fsm/end (constantly true)]]}}})
@@ -116,18 +127,20 @@ The spec contains the following keys:
 
 ;; FSM with pre and post interceptors
 (fsm/run
- (fsm/compile {:fsm  {::fsm/start {:handler    (fn [data] (update data :x inc))
+ (fsm/compile {:fsm  {::fsm/start {:handler    (fn [_resources data] (update data :x inc))
                                    :dispatches [[:foo (constantly true)]]}
-                      :foo       {:handler    (fn [data] (update data :x inc))
+                      :foo       {:handler    (fn [_resources data] (update data :x inc))
                                   :dispatches [[::fsm/end (constantly true)]]}}
                :opts {:pre  (fn [{:keys [current-state-id]
-                                  :as   fsm}]
+                                  :as   fsm}
+                                 _resources ]
                               (println "pre" current-state-id)
                               (update-in fsm [:data :pre] (fnil conj [])
                                          {:pre  current-state-id
                                           :time (System/currentTimeMillis)}))
                       :post (fn [{:keys [current-state-id]
-                                  :as   fsm}]
+                                  :as   fsm}
+                                 _resources ]
                               (update-in fsm [:data :post] (fnil conj [])
                                          {:post current-state-id
                                           :time (System/currentTimeMillis)}))}})
@@ -141,6 +154,11 @@ The spec contains the following keys:
            {:post :maestro.core/end :time 1681995016316}]}
 ```
 
+### Resources
+
+The resource map is used to provide the FSM for any stateful resources such as database connections, queues, and so on.
+These resources can be used within the handlers to produce side effects.
+
 ### EDN Spec
 
 FSM spec can be written to an EDN file, dispatches will be compiled using [SCI](https://github.com/babashka/sci).
@@ -150,14 +168,14 @@ Given the following `fsm.edn`
 
 ```clojure
 {:fsm {:maestro.core/start {:handler :foo
-                            :dispatches [[:maestro.core/end (fn [{:keys [v]}] (= v 5))]]}}}
+                            :dispatches [[:maestro.core/end (fn [_resources {:keys [v]}] (= v 5))]]}}}
 ```
 
 FSM can be instantiated as follows:
 
 ```clojure
 (-> (compile (edn/read-string (slurp "test/fsm.edn"))
-             {:foo (fn [data] (assoc data :v 5))})
+             {:foo (fn [_resources data] (assoc data :v 5))})
     (run))
 => {:v 5}  
 ```

@@ -6,26 +6,27 @@
 
 (defn default-on-end
   "returns the data key from the FSM map"
-  [{:keys [data]}]
+  [_resources {:keys [data]}]
   data)
 
 (defn default-on-error
   "default error handler throws ex-info
    with original error being found under the :error key"
-  [fsm]
+  [_resources fsm]
   (throw (ex-info "execution error" fsm)))
 
 (defn normalize-handler
   [current-state-id handler async?]
   (if async?
     handler
-    (fn [data callback error-handler]
+    (fn [resources data callback error-handler]
       (try
-        (callback (handler data))
+        (callback (handler resources data))
         (catch Exception ex
-          (error-handler (ex-info "execution error" {:current-state-id current-state-id
-                                                     :data             data
-                                                     :error            ex})))))))
+          (error-handler
+           (ex-info "execution error" {:current-state-id current-state-id
+                                       :data             data
+                                       :error            ex})))))))
 
 (defn compile-state-handler
   [state-id {:keys [handler dispatches async?]} ctx valid-dispatch-targets]
@@ -59,7 +60,7 @@
 (defn add-trace-segment [trace max-trace segment]
   (vec (take-last max-trace (conj trace segment))))
 
-(defn enqueue-next-state [queue {:keys [current-state-id opts] :as fsm} dispatches post error-handler data] 
+(defn enqueue-next-state [queue {:keys [current-state-id opts] :as fsm} resources dispatches post error-handler data] 
   (let [target-id (ffirst (drop-while (fn [[_target selector]] (not (selector data))) dispatches))]
     (if (get-in fsm [:fsm target-id])
       (.put queue (-> fsm
@@ -70,8 +71,10 @@
                       (assoc :current-state-id target-id 
                              :last-state-id current-state-id
                              :data data)
-                      (post)))
-      (error-handler (ex-info "invalid target state transition" {:current-state-id current-state-id
+                      (post resources)))
+      (error-handler
+       resources
+       (ex-info "invalid target state transition" {:current-state-id current-state-id
                                                                  :target-state-id  target-id})))))
 
 (defn compile
@@ -97,7 +100,7 @@
          (update :fsm dissoc ::end ::handler)
          (compile-dispatches)
          (update :fsm merge {::end {:handler end}
-                             ::halt {:handler identity}
+                             ::halt {:handler (fn [_resources fsm] (dissoc fsm :fsm))}
                              ::error {:handler error}})))))
 
 (defn run-subscriptions! [data subscriptions]
@@ -115,15 +118,22 @@
 
 (defn run
   "executes the FSM spec compiled using compile"
-  ([{:keys [data] :as fsm}]
-   (run fsm (or data {})))
-  ([{trace :trace
-     fsm :fsm
+  ([fsm]
+   (run fsm {} {}))
+  ([fsm resources]
+   (run fsm resources {}))
+  ([{fsm :fsm
+     {:keys [max-trace subscriptions pre post]
+      :or {max-trace 1000
+           pre (fn [fsm _resources] fsm)
+           post (fn [fsm _resources] fsm)}} :opts}
+    resources
+    {trace :trace
+     data :data
      current-state-id :current-state-id
-     {:keys [max-trace subscriptions pre post] :or {max-trace 1000 pre identity post identity}} :opts
      :or {current-state-id ::start
-          trace []}}
-    data]
+          trace []
+          data {}}}]
    (let [queue (ArrayBlockingQueue. 1)]
      (.put queue
            (post
@@ -134,11 +144,12 @@
              :trace            trace
              :opts             {:max-trace     max-trace
                                 :subscriptions (reduce
-                                                (fn [m [path sub]] 
+                                                (fn [m [path sub]]
                                                   (assoc m path (assoc sub :value (get-in data path))))
                                                 {}
-                                                subscriptions)}}))
-     (loop [{:keys [data current-state-id last-state-id opts] :as fsm} (pre (.take queue))]
+                                                subscriptions)}}
+            resources))
+     (loop [{:keys [data current-state-id last-state-id opts] :as fsm} (pre (.take queue) resources)]
        (let [{:keys [handler dispatches]} (get-in fsm [:fsm current-state-id])
              fsm (assoc-in fsm [:opts :subscriptions] (run-subscriptions! data (:subscriptions opts)))
              error-callback (fn [error]
@@ -148,18 +159,18 @@
                                                 {:current-state-id current-state-id
                                                  :status           :error})
                                         (assoc :current-state-id ::error :error error))))
-             callback (partial enqueue-next-state queue fsm dispatches post error-handler)] 
+             callback (partial enqueue-next-state queue fsm resources dispatches post error-handler)]
          (cond
            (= ::end current-state-id)
-           (handler fsm)
+           (handler resources fsm)
 
            (= ::halt current-state-id)
-           (handler (assoc fsm :current-state-id last-state-id :last-state-id nil))
+           (handler resources (assoc fsm :current-state-id last-state-id :last-state-id nil))
            
            (= ::error current-state-id)
-           (handler fsm)
+           (handler resources fsm)
 
            :else
            (do
-             (handler data callback error-callback)
-             (recur (pre (.take queue))))))))))
+             (handler resources data callback error-callback)
+             (recur (pre (.take queue) resources)))))))))
