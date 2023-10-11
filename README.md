@@ -20,7 +20,7 @@ Add the following dependency to your project:
 
 ```clojure
 {:deps {io.github.yogthos/maestro {:git/tag "v0.2.0" 
-                                   :git/sha "6064135"}}}
+                                   :git/sha "e969e9a"}}}
 ```
 
 ### Usage
