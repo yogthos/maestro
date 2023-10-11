@@ -127,24 +127,25 @@ The state map can contain the following keys:
 
 ;; FSM with pre and post interceptors
 (fsm/run
- (fsm/compile {:fsm  {::fsm/start {:handler    (fn [_resources data] (update data :x inc))
+ (fsm/compile {:fsm  {::fsm/start {:handler (fn [_resources data] (update data :x inc))
                                    :dispatches [[:foo (constantly true)]]}
-                      :foo       {:handler    (fn [_resources data] (update data :x inc))
+                      :foo       {:handler (fn [_resources data] (update data :x inc))
                                   :dispatches [[::fsm/end (constantly true)]]}}
                :opts {:pre  (fn [{:keys [current-state-id]
                                   :as   fsm}
-                                 _resources ]
+                                 _resources]
                               (println "pre" current-state-id)
                               (update-in fsm [:data :pre] (fnil conj [])
                                          {:pre  current-state-id
                                           :time (System/currentTimeMillis)}))
                       :post (fn [{:keys [current-state-id]
                                   :as   fsm}
-                                 _resources ]
+                                 _resources]
                               (update-in fsm [:data :post] (fnil conj [])
                                          {:post current-state-id
                                           :time (System/currentTimeMillis)}))}})
- {:x 1})
+ {}
+ {:data {:x 1}})
 => {:x 3
     :pre [{:pre :maestro.core/start :time 1681995016315}
           {:pre :foo, :time 1681995016316}
@@ -168,7 +169,7 @@ Given the following `fsm.edn`
 
 ```clojure
 {:fsm {:maestro.core/start {:handler :foo
-                            :dispatches [[:maestro.core/end (fn [_resources {:keys [v]}] (= v 5))]]}}}
+                            :dispatches [[:maestro.core/end (fn [{:keys [v]}] (= v 5))]]}}}
 ```
 
 FSM can be instantiated as follows:
