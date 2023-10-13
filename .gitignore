@@ -1,0 +1,7 @@
+.calva
+output.calva-repl
+.clj-kondo
+.cpcache
+.lsp
+.nrepl-port
+.DS_Store
