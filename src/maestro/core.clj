@@ -73,9 +73,8 @@
                              :data data)
                       (post resources)))
       (error-handler
-       resources
        (ex-info "invalid target state transition" {:current-state-id current-state-id
-                                                                 :target-state-id  target-id})))))
+                                                   :target-state-id  target-id})))))
 
 (defn compile
   "compiles the FSM from the spec, compiled FSM should be passed to the run function"
@@ -97,7 +96,7 @@
    (let [end (get-in spec [:fsm ::end :handler] default-on-end)
          error (get-in spec [:fsm ::error :handler] default-on-error)]
      (-> spec
-         (update :fsm dissoc ::end ::handler)
+         (update :fsm dissoc ::end ::error)
          (compile-dispatches)
          (update :fsm merge {::end {:handler end}
                              ::halt {:handler (fn [_resources fsm] (dissoc fsm :fsm))}
@@ -139,7 +138,7 @@
            (post
             {:fsm              fsm
              :current-state-id current-state-id
-             :last-state-id    (last trace)
+             :last-state-id    (:state-id (last trace))
              :data             data
              :trace            trace
              :opts             {:max-trace     max-trace
@@ -156,10 +155,10 @@
                               (.put queue
                                     (-> (update fsm :trace add-trace-segment
                                                 max-trace
-                                                {:current-state-id current-state-id
-                                                 :status           :error})
+                                                {:state-id current-state-id
+                                                 :status   :error})
                                         (assoc :current-state-id ::error :error error))))
-             callback (partial enqueue-next-state queue fsm resources dispatches post error-handler)]
+             callback (partial enqueue-next-state queue fsm resources dispatches post error-callback)]
          (cond
            (= ::end current-state-id)
            (handler resources fsm)
