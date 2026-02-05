@@ -4,7 +4,7 @@
 
 Maestro is a state machine runner for expressing workflows.
 
-While the idea of writing applications in a pure functional style is appealing, it's not always clear how to separate side effects from pure compuation in practice. Variations of Clean Architecture approach are often suggested as a way to accomplish this goal. This style dictates that IO should be handled in the outer layer that wraps pure computation core of the application.
+While the idea of writing applications in a pure functional style is appealing, it's not always clear how to separate side effects from pure computation in practice. Variations of Clean Architecture approach are often suggested as a way to accomplish this goal. This style dictates that IO should be handled in the outer layer that wraps pure computation core of the application.
 
 While this notion is appealing, it only works in cases where the totality of the data that will be operated on is known up front. Unfortunately, it's impossible to know ahead of time what data will be needed in most real world applications. In many cases additional data needs to load conditionally based on the type of input and the current state of processing.
 
@@ -12,7 +12,7 @@ What we can do, however, is break up our application into small components that 
 
 The problem being solved can be expressed in terms of a workflow represented by a graph where the nodes compute the state, and the edges represent transitions between the states. Each time we enter a node in this graph, we look at the input, decide what additional data we may need, run the computation, and transition to the next state. Each node in the graph is a Lego block that accomplishes a particular task. These nodes are then connected by a layer of code governs the data flow.
 
-Maestro implements the above architecture using a map to describe overall state, then pass it through agraph of functions that produce a new state. Each function takes the state map as a parameter, does some operations on it, and then returns a new map that gets passed to the next function.
+Maestro implements the above architecture using a map to describe overall state, then pass it through a graph of functions that produce a new state. Each function takes the state map as a parameter, does some operations on it, and then returns a new map that gets passed to the next function.
 
 ### Installation
 
@@ -55,8 +55,8 @@ The spec contains the following keys:
 * `:opts` - metadata
   * `:max-trace` - indicates custom trace size
   * `:subscriptions` - subscriptions to state changes for executing side effects
-  * `:pre` - function called before the handler executes, accepts the current FSM state and returns it
-  * `:post` - function called after the handler executes, accepts the current FSM state and returns it
+  * `:pre` - function called before the handler executes, accepts the current FSM state and resources, returns the FSM state
+  * `:post` - function called after the handler executes, accepts the current FSM state and resources, returns the FSM state
 
 ### Complete example
 
@@ -77,7 +77,7 @@ The `run` function has three aritys:
 
 * `[fsm]`, initializes `resources` and `state` to empty maps
 * `[fsm resources]`, initializes `state` to an empty map
-* `[fsm resoruces state]`
+* `[fsm resources state]`
 
 The state map can contain the following keys:
 
@@ -175,8 +175,8 @@ Given the following `fsm.edn`
 FSM can be instantiated as follows:
 
 ```clojure
-(-> (compile (edn/read-string (slurp "test/fsm.edn"))
-             {:foo (fn [_resources data] (assoc data :v 5))})
-    (run))
-=> {:v 5}  
+(-> (fsm/compile (edn/read-string (slurp "test/fsm.edn"))
+                 {:foo (fn [_resources data] (assoc data :v 5))})
+    (fsm/run))
+=> {:v 5}
 ```
