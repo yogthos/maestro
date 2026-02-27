@@ -416,6 +416,45 @@
       (is (some #(and (contains? (set %) :a) (contains? (set %) :b))
                 (:cycles analysis))))))
 
+;; Bug fixes
+
+(deftest compile-eagerly-validates-dispatches
+  (testing "invalid dispatch targets are caught at compile time, not deferred"
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo
+         #"invalid dispatch"
+         (fsm/compile {:fsm {::fsm/start {:handler    (fn [_ d] d)
+                                          :dispatches [[:nonexistent (constantly true)]]}}})))))
+
+(deftest analyze-no-duplicate-cycles
+  (testing "each cycle is reported only once regardless of starting node"
+    (let [analysis (fsm/analyze
+                    {:fsm {::fsm/start {:handler    identity
+                                        :dispatches [[:a (constantly true)]]}
+                           :a          {:handler    identity
+                                        :dispatches [[:b (constantly true)]
+                                                     [::fsm/end (constantly true)]]}
+                           :b          {:handler    identity
+                                        :dispatches [[:a (constantly true)]]}}})]
+      ;; The cycle :a -> :b -> :a should appear exactly once
+      (is (= 1 (count (:cycles analysis)))))))
+
+(deftest compile-inline-skips-sci
+  (testing "inline dispatch predicates are used directly, not evaluated as SCI forms"
+    ;; keyword as dispatch predicate: (:ready? {:ready? true}) => true
+    (is (= {:ready? true}
+           (fsm/run
+            (fsm/compile
+             {:fsm {::fsm/start {:handler    (fn [_ data] (assoc data :ready? true))
+                                 :dispatches [[::fsm/end :ready?]]}}})))))
+  (testing "inline fn dispatch predicates preserve identity after compile"
+    (let [my-pred (fn [data] (:x data))
+          compiled (fsm/compile
+                    {:fsm {::fsm/start {:handler    (fn [_ d] d)
+                                        :dispatches [[::fsm/end my-pred]]}}})
+          compiled-pred (-> compiled :fsm (get ::fsm/start) :dispatches first second)]
+      (is (identical? my-pred compiled-pred)))))
+
 (deftest analyze-well-formed-fsm
   (testing "a well-formed FSM has no unreachable states or dead ends"
     (let [analysis (fsm/analyze
