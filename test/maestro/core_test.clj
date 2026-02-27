@@ -439,6 +439,22 @@
       ;; The cycle :a -> :b -> :a should appear exactly once
       (is (= 1 (count (:cycles analysis)))))))
 
+(deftest compile-inline-skips-sci
+  (testing "inline dispatch predicates are used directly, not evaluated as SCI forms"
+    ;; keyword as dispatch predicate: (:ready? {:ready? true}) => true
+    (is (= {:ready? true}
+           (fsm/run
+            (fsm/compile
+             {:fsm {::fsm/start {:handler    (fn [_ data] (assoc data :ready? true))
+                                 :dispatches [[::fsm/end :ready?]]}}})))))
+  (testing "inline fn dispatch predicates preserve identity after compile"
+    (let [my-pred (fn [data] (:x data))
+          compiled (fsm/compile
+                    {:fsm {::fsm/start {:handler    (fn [_ d] d)
+                                        :dispatches [[::fsm/end my-pred]]}}})
+          compiled-pred (-> compiled :fsm (get ::fsm/start) :dispatches first second)]
+      (is (identical? my-pred compiled-pred)))))
+
 (deftest analyze-well-formed-fsm
   (testing "a well-formed FSM has no unreachable states or dead ends"
     (let [analysis (fsm/analyze

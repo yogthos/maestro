@@ -32,26 +32,36 @@
                                        :data             data
                                        :error            ex})))))))
 
-(defn compile-state-handler
-  [state-id {:keys [handler dispatches async?]} ctx valid-dispatch-targets]
-  {:handler (normalize-handler state-id handler async?)
-   :dispatches (mapv (fn [[target handler]]
-                       (when-not (contains? valid-dispatch-targets target)
-                         (throw
-                          (ex-info (str "invalid dispatch " target " for state " state-id)
-                                   {:id     state-id
-                                    :target target})))
-                       [target (sci/eval-form ctx handler)])
-                     dispatches)})
+(defn- validate-dispatch-targets [state-id dispatches valid-dispatch-targets]
+  (doseq [[target _] dispatches]
+    (when-not (contains? valid-dispatch-targets target)
+      (throw
+       (ex-info (str "invalid dispatch " target " for state " state-id)
+                {:id     state-id
+                 :target target})))))
 
-(defn validate-state-spec [id {:keys [handler dispatches] :as spec}]
+(defn- validate-state-spec [id {:keys [handler dispatches] :as spec}]
   (when (nil? handler)
     (throw (ex-info (str "missing handler for spec " id) {:id id :spec spec})))
   (when (and (not (contains? #{::end ::halt ::error} id)) (nil? dispatches))
     (throw (ex-info (str "missing dispatches for spec " id) {:id id :spec spec}))))
 
-(defn compile-dispatches [spec]
-  (let [ctx (sci/init {})
+(defn- compile-dispatch-pred
+  "Compiles a dispatch predicate. If it's already an IFn (inline spec),
+   uses it directly. Otherwise evaluates it as a SCI form (EDN spec)."
+  [ctx pred]
+  (if (ifn? pred) pred (sci/eval-form @ctx pred)))
+
+(defn- compile-state-handler
+  [state-id {:keys [handler dispatches async?]} ctx valid-dispatch-targets]
+  (validate-dispatch-targets state-id dispatches valid-dispatch-targets)
+  {:handler    (normalize-handler state-id handler async?)
+   :dispatches (mapv (fn [[target pred]]
+                       [target (compile-dispatch-pred ctx pred)])
+                     dispatches)})
+
+(defn- compile-dispatches [spec]
+  (let [ctx (delay (sci/init {}))
         valid-dispatch-targets (-> spec :fsm keys set (conj ::end ::halt ::error))]
     (update spec :fsm
             (fn [fsm]
