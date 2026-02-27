@@ -86,6 +86,8 @@ The state map can contain the following keys:
 * `:data` - initial data the FSM will operate on
 * `:trace` - the log of states that the FSM transitioned through (defaults to 1000)
 
+Each trace segment contains `:state-id`, `:status` (`:success` or `:error`), and `:duration-ms` (handler execution time in milliseconds).
+
 ```clojure
 ;; FSM that has an initial state and trace size
 (-> (fsm/compile
@@ -154,6 +156,55 @@ The state map can contain the following keys:
            {:post :foo, :time 1681995016316}
            {:post :maestro.core/end :time 1681995016316}]}
 ```
+
+### Async Execution
+
+The `run-async` function executes the FSM in a separate thread and returns a future:
+
+```clojure
+(let [result (fsm/run-async
+              (fsm/compile
+               {:fsm {::fsm/start {:handler    (fn [_resources data] (assoc data :x 1))
+                                   :dispatches [[::fsm/end (constantly true)]]}}}))]
+  ;; do other work while FSM runs
+  @result)
+=> {:x 1}
+```
+
+`run-async` supports the same three arities as `run`:
+
+* `[fsm]`
+* `[fsm resources]`
+* `[fsm resources state]`
+
+### Static Analysis
+
+The `analyze` function examines an uncompiled FSM spec and reports structural information:
+
+```clojure
+(fsm/analyze
+ {:fsm {::fsm/start {:handler    identity
+                      :dispatches [[:a (constantly true)]]}
+        :a          {:handler    identity
+                     :dispatches [[:b (constantly true)]]}
+        :b          {:handler    identity
+                     :dispatches [[::fsm/end (constantly true)]]}
+        :orphan     {:handler    identity
+                     :dispatches [[::fsm/end (constantly true)]]}}})
+=> {:reachable      #{:maestro.core/start :a :b}
+    :unreachable    #{:orphan}
+    :no-path-to-end #{}
+    :cycles         []}
+```
+
+The returned map contains:
+
+* `:reachable` - set of states reachable from `::start`
+* `:unreachable` - set of declared states not reachable from `::start`
+* `:no-path-to-end` - set of reachable states with no path to `::end`
+* `:cycles` - collection of cycles detected in the FSM
+
+This is useful for catching dead states, missing transitions, and unintentional loops during development.
 
 ### Resources
 

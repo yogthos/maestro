@@ -122,14 +122,16 @@
                                 :bar       {:handler    (fn [_resources data] (assoc data :y 3))
                                             :dispatches [[::fsm/end (constantly true)]]}}})
         state (fsm/run fsm)]
-    (is (= {:current-state-id :foo,
-            :last-state-id nil,
-            :data {:foo :bar, :y 2},
-            :trace
-            [{:state-id :maestro.core/start, :status :success}
-             {:state-id :foo, :status :success}],
-            :opts {:max-trace 1000, :subscriptions {}}}
-           state))
+    (is (= :foo (:current-state-id state)))
+    (is (nil? (:last-state-id state)))
+    (is (= {:foo :bar, :y 2} (:data state)))
+    (is (= 2 (count (:trace state))))
+    (is (= ::fsm/start (:state-id (first (:trace state)))))
+    (is (= :success (:status (first (:trace state)))))
+    (is (number? (:duration-ms (first (:trace state)))))
+    (is (= :foo (:state-id (second (:trace state)))))
+    (is (= :success (:status (second (:trace state)))))
+    (is (= {:max-trace 1000, :subscriptions {}} (:opts state)))
     (is (= {:foo    :bar
             :y      3
             :ready? true}
@@ -262,3 +264,167 @@
       ;; last-state-id should be the keyword from the trace, not the whole map
       (is (= :some-previous-state @captured))
       (is (keyword? @captured)))))
+
+;; Feature: Timing in traces
+
+(deftest trace-timing
+  (testing "trace segments include :duration-ms for sync handlers"
+    (let [result (fsm/run
+                  (fsm/compile
+                   {:fsm {::fsm/start {:handler    (fn [_resources data]
+                                                     (Thread/sleep 10)
+                                                     (assoc data :x 1))
+                                       :dispatches [[:next (constantly true)]]}
+                          :next       {:handler    (fn [_resources data] (assoc data :y 2))
+                                       :dispatches [[::fsm/end (constantly true)]]}
+                          ::fsm/end   {:handler (fn [_resources fsm] fsm)}}}))]
+      (is (= 2 (count (:trace result))))
+      (is (every? #(contains? % :duration-ms) (:trace result)))
+      (is (every? #(number? (:duration-ms %)) (:trace result)))
+      ;; The sleep handler should take at least 10ms
+      (is (>= (:duration-ms (first (:trace result))) 10)))))
+
+(deftest trace-timing-async
+  (testing "trace segments include :duration-ms for async handlers"
+    (let [result (fsm/run
+                  (fsm/compile
+                   {:fsm {::fsm/start {:handler    (fn [_resources data cb _err]
+                                                     (Thread/sleep 10)
+                                                     (cb (assoc data :x 1)))
+                                       :async?     true
+                                       :dispatches [[:next (constantly true)]]}
+                          :next       {:handler    (fn [_resources data] (assoc data :y 2))
+                                       :dispatches [[::fsm/end (constantly true)]]}
+                          ::fsm/end   {:handler (fn [_resources fsm] fsm)}}}))]
+      (is (= 2 (count (:trace result))))
+      (is (every? #(contains? % :duration-ms) (:trace result)))
+      (is (>= (:duration-ms (first (:trace result))) 10)))))
+
+(deftest trace-timing-on-error
+  (testing "error trace segments include :duration-ms"
+    (let [result (fsm/run
+                  (fsm/compile
+                   {:fsm {::fsm/start {:handler    (fn [_resources _data]
+                                                     (Thread/sleep 10)
+                                                     (throw (ex-info "boom" {})))
+                                       :dispatches [[::fsm/end (constantly true)]]}
+                          ::fsm/error {:handler (fn [_resources fsm] fsm)}}}))]
+      (is (= 1 (count (:trace result))))
+      (is (contains? (first (:trace result)) :duration-ms))
+      (is (>= (:duration-ms (first (:trace result))) 10)))))
+
+;; Feature: run-async
+
+(deftest run-async-basic
+  (testing "run-async returns a future with the result"
+    (let [result (fsm/run-async
+                  (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data] (assoc data :x 1))
+                                                   :dispatches [[::fsm/end (constantly true)]]}}}))]
+      (is (future? result))
+      (is (= {:x 1} @result)))))
+
+(deftest run-async-with-resources
+  (testing "run-async passes resources through"
+    (let [result (fsm/run-async
+                  (fsm/compile {:fsm {::fsm/start {:handler    (fn [{:keys [multiplier]} data]
+                                                                 (assoc data :x (* multiplier 5)))
+                                                   :dispatches [[::fsm/end (constantly true)]]}}})
+                  {:multiplier 3})]
+      (is (= {:x 15} @result)))))
+
+(deftest run-async-with-state
+  (testing "run-async passes initial state through"
+    (let [result (fsm/run-async
+                  (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data] (update data :x inc))
+                                                   :dispatches [[::fsm/end (constantly true)]]}}})
+                  {}
+                  {:data {:x 10}})]
+      (is (= {:x 11} @result)))))
+
+(deftest run-async-non-blocking
+  (testing "run-async does not block the calling thread"
+    (let [started (atom false)
+          latch (java.util.concurrent.CountDownLatch. 1)
+          result (fsm/run-async
+                  (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data]
+                                                                 (.await latch)
+                                                                 (assoc data :done true))
+                                                   :dispatches [[::fsm/end (constantly true)]]}}}))]
+      (reset! started true)
+      ;; We got here without blocking, proving run-async is non-blocking
+      (is @started)
+      (is (not (realized? result)))
+      (.countDown latch)
+      (is (= {:done true} (deref result 5000 :timeout))))))
+
+;; Feature: Static analysis
+
+(deftest analyze-reachable-states
+  (testing "identifies all reachable states from start"
+    (let [analysis (fsm/analyze
+                    {:fsm {::fsm/start {:handler    identity
+                                        :dispatches [[:a (constantly true)]]}
+                           :a          {:handler    identity
+                                        :dispatches [[:b (constantly true)]]}
+                           :b          {:handler    identity
+                                        :dispatches [[::fsm/end (constantly true)]]}
+                           :orphan     {:handler    identity
+                                        :dispatches [[::fsm/end (constantly true)]]}}})]
+      (is (contains? (:reachable analysis) ::fsm/start))
+      (is (contains? (:reachable analysis) :a))
+      (is (contains? (:reachable analysis) :b))
+      (is (not (contains? (:reachable analysis) :orphan))))))
+
+(deftest analyze-unreachable-states
+  (testing "identifies unreachable states"
+    (let [analysis (fsm/analyze
+                    {:fsm {::fsm/start {:handler    identity
+                                        :dispatches [[:a (constantly true)]]}
+                           :a          {:handler    identity
+                                        :dispatches [[::fsm/end (constantly true)]]}
+                           :orphan1    {:handler    identity
+                                        :dispatches [[::fsm/end (constantly true)]]}
+                           :orphan2    {:handler    identity
+                                        :dispatches [[:orphan1 (constantly true)]]}}})]
+      (is (= #{:orphan1 :orphan2} (:unreachable analysis))))))
+
+(deftest analyze-no-path-to-end
+  (testing "identifies states with no path to ::end"
+    (let [analysis (fsm/analyze
+                    {:fsm {::fsm/start {:handler    identity
+                                        :dispatches [[:a (constantly true)]]}
+                           :a          {:handler    identity
+                                        :dispatches [[:b (constantly true)]]}
+                           :b          {:handler    identity
+                                        :dispatches [[:a (constantly true)]]}}})]
+      ;; a and b form a cycle with no exit to ::end
+      (is (contains? (:no-path-to-end analysis) :a))
+      (is (contains? (:no-path-to-end analysis) :b)))))
+
+(deftest analyze-cycles
+  (testing "detects cycles in the FSM"
+    (let [analysis (fsm/analyze
+                    {:fsm {::fsm/start {:handler    identity
+                                        :dispatches [[:a (constantly true)]]}
+                           :a          {:handler    identity
+                                        :dispatches [[:b (constantly true)]
+                                                     [::fsm/end (constantly true)]]}
+                           :b          {:handler    identity
+                                        :dispatches [[:a (constantly true)]]}}})]
+      (is (seq (:cycles analysis)))
+      ;; Should find a cycle involving :a and :b
+      (is (some #(and (contains? (set %) :a) (contains? (set %) :b))
+                (:cycles analysis))))))
+
+(deftest analyze-well-formed-fsm
+  (testing "a well-formed FSM has no unreachable states or dead ends"
+    (let [analysis (fsm/analyze
+                    {:fsm {::fsm/start {:handler    identity
+                                        :dispatches [[:a (constantly true)]]}
+                           :a          {:handler    identity
+                                        :dispatches [[:b (constantly true)]]}
+                           :b          {:handler    identity
+                                        :dispatches [[::fsm/end (constantly true)]]}}})]
+      (is (empty? (:unreachable analysis)))
+      (is (empty? (:no-path-to-end analysis)))
+      (is (empty? (:cycles analysis))))))
