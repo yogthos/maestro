@@ -416,6 +416,29 @@
       (is (some #(and (contains? (set %) :a) (contains? (set %) :b))
                 (:cycles analysis))))))
 
+;; Bug fixes
+
+(deftest compile-eagerly-validates-dispatches
+  (testing "invalid dispatch targets are caught at compile time, not deferred"
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo
+         #"invalid dispatch"
+         (fsm/compile {:fsm {::fsm/start {:handler    (fn [_ d] d)
+                                          :dispatches [[:nonexistent (constantly true)]]}}})))))
+
+(deftest analyze-no-duplicate-cycles
+  (testing "each cycle is reported only once regardless of starting node"
+    (let [analysis (fsm/analyze
+                    {:fsm {::fsm/start {:handler    identity
+                                        :dispatches [[:a (constantly true)]]}
+                           :a          {:handler    identity
+                                        :dispatches [[:b (constantly true)]
+                                                     [::fsm/end (constantly true)]]}
+                           :b          {:handler    identity
+                                        :dispatches [[:a (constantly true)]]}}})]
+      ;; The cycle :a -> :b -> :a should appear exactly once
+      (is (= 1 (count (:cycles analysis)))))))
+
 (deftest analyze-well-formed-fsm
   (testing "a well-formed FSM has no unreachable states or dead ends"
     (let [analysis (fsm/analyze
