@@ -1,8 +1,11 @@
 (ns maestro.core
   (:refer-clojure :exclude [compile])
-  (:require  
+  (:require
    [sci.core :as sci])
-(:import java.util.concurrent.ArrayBlockingQueue))
+  (:import java.util.concurrent.ArrayBlockingQueue))
+
+(defn- elapsed-ms [start]
+  (/ (double (- (System/nanoTime) start)) 1000000.0))
 
 (defn default-on-end
   "returns the data key from the FSM map"
@@ -60,15 +63,16 @@
 (defn add-trace-segment [trace max-trace segment]
   (vec (take-last max-trace (conj trace segment))))
 
-(defn enqueue-next-state [queue {:keys [current-state-id opts] :as fsm} resources dispatches post error-handler data] 
+(defn enqueue-next-state [queue {:keys [current-state-id opts] :as fsm} resources dispatches post error-handler start-time data]
   (let [target-id (ffirst (drop-while (fn [[_target selector]] (not (selector data))) dispatches))]
     (if (get-in fsm [:fsm target-id])
       (.put queue (-> fsm
                       (update :trace add-trace-segment
                               (:max-trace opts)
-                              {:state-id current-state-id
-                               :status   :success})
-                      (assoc :current-state-id target-id 
+                              {:state-id    current-state-id
+                               :status      :success
+                               :duration-ms (elapsed-ms start-time)})
+                      (assoc :current-state-id target-id
                              :last-state-id current-state-id
                              :data data)
                       (post resources)))
@@ -78,7 +82,7 @@
 
 (defn compile
   "compiles the FSM from the spec, compiled FSM should be passed to the run function"
-  ([spec handlers] 
+  ([spec handlers]
    (compile
     (update spec :fsm
             (fn [fsm]
@@ -151,21 +155,23 @@
      (loop [{:keys [data current-state-id last-state-id opts] :as fsm} (pre (.take queue) resources)]
        (let [{:keys [handler dispatches]} (get-in fsm [:fsm current-state-id])
              fsm (assoc-in fsm [:opts :subscriptions] (run-subscriptions! data (:subscriptions opts)))
+             start-time (System/nanoTime)
              error-callback (fn [error]
                               (.put queue
                                     (-> (update fsm :trace add-trace-segment
                                                 max-trace
-                                                {:state-id current-state-id
-                                                 :status   :error})
+                                                {:state-id    current-state-id
+                                                 :status      :error
+                                                 :duration-ms (elapsed-ms start-time)})
                                         (assoc :current-state-id ::error :error error))))
-             callback (partial enqueue-next-state queue fsm resources dispatches post error-callback)]
+             callback (partial enqueue-next-state queue fsm resources dispatches post error-callback start-time)]
          (cond
            (= ::end current-state-id)
            (handler resources fsm)
 
            (= ::halt current-state-id)
            (handler resources (assoc fsm :current-state-id last-state-id :last-state-id nil))
-           
+
            (= ::error current-state-id)
            (handler resources fsm)
 
@@ -173,3 +179,95 @@
            (do
              (handler resources data callback error-callback)
              (recur (pre (.take queue) resources)))))))))
+
+(defn run-async
+  "executes the FSM asynchronously, returns a future with the result"
+  ([fsm]
+   (future (run fsm)))
+  ([fsm resources]
+   (future (run fsm resources)))
+  ([fsm resources state]
+   (future (run fsm resources state))))
+
+(defn analyze
+  "analyzes an FSM spec and returns a map with:
+   :reachable      - set of states reachable from ::start
+   :unreachable    - set of states not reachable from ::start
+   :no-path-to-end - set of reachable states with no path to ::end
+   :cycles         - collection of cycles found in the FSM"
+  [{:keys [fsm]}]
+  (let [state-ids (set (keys fsm))
+        ;; Build adjacency map: state -> set of dispatch targets
+        edges (reduce-kv
+               (fn [m state-id {:keys [dispatches]}]
+                 (assoc m state-id
+                        (into #{} (map first) dispatches)))
+               {}
+               fsm)
+        ;; BFS from ::start to find reachable states
+        reachable (loop [visited #{}
+                         queue [::start]]
+                    (if (empty? queue)
+                      visited
+                      (let [state (first queue)
+                            queue (subvec queue 1)]
+                        (if (or (contains? visited state)
+                                (not (contains? state-ids state)))
+                          (recur visited queue)
+                          (recur (conj visited state)
+                                 (into queue (get edges state)))))))
+        ;; Unreachable = declared states minus reachable (excluding terminal states)
+        unreachable (disj (clojure.set/difference state-ids reachable)
+                          ::end ::halt ::error)
+        ;; Reverse edges for backward reachability from ::end
+        reverse-edges (reduce-kv
+                       (fn [m state-id targets]
+                         (reduce (fn [m target]
+                                   (update m target (fnil conj #{}) state-id))
+                                 m
+                                 targets))
+                       {}
+                       edges)
+        ;; BFS backward from ::end to find states that can reach ::end
+        can-reach-end (loop [visited #{}
+                             queue [::end]]
+                        (if (empty? queue)
+                          visited
+                          (let [state (first queue)
+                                queue (subvec queue 1)]
+                            (if (contains? visited state)
+                              (recur visited queue)
+                              (recur (conj visited state)
+                                     (into queue (get reverse-edges state)))))))
+        ;; Reachable states that cannot reach ::end (excluding terminal states)
+        no-path-to-end (disj (clojure.set/difference reachable can-reach-end)
+                             ::start ::end ::halt ::error)
+        ;; Find cycles using DFS with coloring
+        cycles (let [find-cycles
+                     (fn find-cycles [node visited path path-set cycles]
+                       (if (contains? path-set node)
+                         ;; Found a cycle - extract it
+                         (let [cycle-start (.indexOf path node)
+                               cycle (subvec path cycle-start)]
+                           (conj cycles cycle))
+                         (if (contains? visited node)
+                           cycles
+                           (let [visited (conj visited node)
+                                 path (conj path node)
+                                 path-set (conj path-set node)]
+                             (reduce
+                              (fn [cycles neighbor]
+                                (if (contains? state-ids neighbor)
+                                  (find-cycles neighbor visited path path-set cycles)
+                                  cycles))
+                              cycles
+                              (get edges node))))))]
+                 (reduce
+                  (fn [cycles state-id]
+                    (find-cycles state-id #{} [] #{} cycles))
+                  []
+                  reachable))]
+    {:reachable      reachable
+     :unreachable    unreachable
+     :no-path-to-end no-path-to-end
+     :cycles         cycles}))
