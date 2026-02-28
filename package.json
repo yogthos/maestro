@@ -1,0 +1,7 @@
+{
+  "name": "maestro",
+  "private": true,
+  "devDependencies": {
+    "shadow-cljs": "^3.3.0"
+  }
+}
