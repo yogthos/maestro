@@ -236,24 +236,24 @@
                                         (try
                                           (let [next (resolve-next-state fsm resources dispatches
                                                                          post result-data start-time)]
-                                            (p/resolve! d next))
+                                            (p/resolve d next))
                                           (catch #?(:clj Exception :cljs :default) e
-                                            (p/resolve! d
-                                                        (-> (update fsm :trace add-trace-segment
-                                                                    max-trace
-                                                                    {:state-id    current-state-id
-                                                                     :status      :error
-                                                                     :duration-ms (elapsed-ms start-time)})
-                                                            (assoc :current-state-id ::error :error e))))))
+                                            (p/resolve d
+                                                       (-> (update fsm :trace add-trace-segment
+                                                                   max-trace
+                                                                   {:state-id    current-state-id
+                                                                    :status      :error
+                                                                    :duration-ms (elapsed-ms start-time)})
+                                                           (assoc :current-state-id ::error :error e))))))
                              error-callback (fn [error]
-                                              (p/resolve! d
-                                                          (-> (update fsm :trace add-trace-segment
-                                                                      max-trace
-                                                                      {:state-id    current-state-id
-                                                                       :status      :error
-                                                                       :duration-ms (elapsed-ms start-time)})
-                                                              (assoc :current-state-id ::error
-                                                                     :error error))))]
+                                              (p/resolve d
+                                                         (-> (update fsm :trace add-trace-segment
+                                                                     max-trace
+                                                                     {:state-id    current-state-id
+                                                                      :status      :error
+                                                                      :duration-ms (elapsed-ms start-time)})
+                                                             (assoc :current-state-id ::error
+                                                                    :error error))))]
                          (handler resources data callback error-callback))
                        ;; If handler resolved the deferred synchronously, loop
                        ;; instead of chaining via p/then to stay stack-safe.

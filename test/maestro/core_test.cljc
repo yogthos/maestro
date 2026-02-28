@@ -97,7 +97,10 @@
               (-> (fsm/run spec)
                   (p/then (fn [result]
                             (is (= {:foo :bar :x 1 :y 2} result))
-                            (done))))))))
+                            (done)))
+                  (p/catch (fn [err]
+                             (is (nil? err) (str "Unexpected error: " err))
+                             (done))))))))
 
 (deftest async-error-test
   (let [spec (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data]
@@ -176,7 +179,10 @@
               (-> (fsm/run spec {} {:data {:x {:y 1}}})
                   (p/then (fn [_]
                             (is (= @x {[:x :y] [2 3]}))
-                            (done))))))))
+                            (done)))
+                  (p/catch (fn [err]
+                             (is (nil? err) (str "Unexpected error: " err))
+                             (done))))))))
 
 (deftest pre-post-test
   (let [spec (fsm/compile {:fsm  {::fsm/start {:handler    (fn [_resources data]
@@ -197,7 +203,10 @@
               (-> (fsm/run spec)
                   (p/then (fn [result]
                             (is (= {:pre-value 1 :foo :bar :post-value 2 :y 2 :z 3} result))
-                            (done))))))))
+                            (done)))
+                  (p/catch (fn [err]
+                             (is (nil? err) (str "Unexpected error: " err))
+                             (done))))))))
 
 (deftest pre-post-sync-test
   (->>
@@ -311,7 +320,10 @@
                 (-> (fsm/run-async spec)
                     (p/then (fn [result]
                               (is (= {:x 1} result))
-                              (done)))))))))
+                              (done)))
+                    (p/catch (fn [err]
+                               (is (nil? err) (str "Unexpected error: " err))
+                               (done)))))))))
 
 (deftest run-async-async-fsm
   (testing "run-async works with async FSM"
@@ -331,7 +343,10 @@
                 (-> (fsm/run-async spec)
                     (p/then (fn [result]
                               (is (= {:x 1} result))
-                              (done)))))))))
+                              (done)))
+                    (p/catch (fn [err]
+                               (is (nil? err) (str "Unexpected error: " err))
+                               (done)))))))))
 
 (deftest duration-ms-in-traces
   (testing "trace segments include :duration-ms"
@@ -376,7 +391,10 @@
                 (-> (fsm/run spec {} {:async? true})
                     (p/then (fn [result]
                               (is (= {:x 1} result))
-                              (done)))))))))
+                              (done)))
+                    (p/catch (fn [err]
+                               (is (nil? err) (str "Unexpected error: " err))
+                               (done)))))))))
 
 (deftest async-override-force-sync
   (testing "force sync execution on an async-compiled FSM via state map"
@@ -404,7 +422,10 @@
                 (-> (fsm/run async-spec {} {})
                     (p/then (fn [result]
                               (is (= {:x 1} result))
-                              (done)))))))))
+                              (done)))
+                    (p/catch (fn [err]
+                               (is (nil? err) (str "Unexpected error: " err))
+                               (done)))))))))
 
 (deftest analyze-reachable-states
   (testing "identifies all reachable states from start"
