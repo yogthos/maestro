@@ -125,14 +125,15 @@
                                 :bar       {:handler    (fn [_resources data] (assoc data :y 3))
                                             :dispatches [[::fsm/end (constantly true)]]}}})
         state (fsm/run fsm)]
-    (is (= {:current-state-id :foo,
-            :last-state-id nil,
-            :data {:foo :bar, :y 2},
-            :trace
-            [{:state-id :maestro.core/start, :status :success}
-             {:state-id :foo, :status :success}],
-            :opts {:max-trace 1000, :subscriptions {}}}
-           state))
+    (is (= :foo (:current-state-id state)))
+    (is (nil? (:last-state-id state)))
+    (is (= {:foo :bar, :y 2} (:data state)))
+    (is (= 1000 (get-in state [:opts :max-trace])))
+    (is (= {} (get-in state [:opts :subscriptions])))
+    (is (= [{:state-id :maestro.core/start, :status :success}
+            {:state-id :foo, :status :success}]
+           (mapv #(select-keys % [:state-id :status]) (:trace state))))
+    (is (every? #(number? (:duration-ms %)) (:trace state)))
     (is (= {:foo    :bar
             :y      3
             :ready? true}
@@ -272,6 +273,49 @@
                                         :dispatches [[::fsm/end my-pred]]}}})
           compiled-pred (-> compiled :fsm (get ::fsm/start) :dispatches first second)]
       (is (identical? my-pred compiled-pred)))))
+
+(deftest run-async-sync-fsm
+  (testing "run-async wraps sync FSM result in a deref-able future"
+    (let [result @(fsm/run-async
+                   (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data] (assoc data :x 1))
+                                                    :dispatches [[::fsm/end (constantly true)]]}}}))]
+      (is (= {:x 1} result)))))
+
+(deftest run-async-async-fsm
+  (testing "run-async works with async FSM"
+    (let [result @(fsm/run-async
+                   (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data cb _err]
+                                                                  (cb (assoc data :x 1)))
+                                                    :async?     true
+                                                    :dispatches [[::fsm/end (constantly true)]]}}}))]
+      (is (= {:x 1} result)))))
+
+(deftest duration-ms-in-traces
+  (testing "trace segments include :duration-ms"
+    (let [result (fsm/run
+                  (fsm/compile {:fsm  {::fsm/start {:handler    (fn [_resources data] (assoc data :x 1))
+                                                    :dispatches [[:foo (constantly true)]]}
+                                       :foo        {:handler    (fn [_resources data] (assoc data :y 2))
+                                                    :dispatches [[::fsm/end (constantly true)]]}}
+                                :opts {:post (fn [fsm _resources] fsm)}})
+                  {}
+                  {})
+          halted (fsm/run
+                  (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data] data)
+                                                   :dispatches [[::fsm/halt (constantly true)]]}}}))]
+      (is (= 1 (count (:trace halted))))
+      (is (every? #(and (contains? % :duration-ms)
+                        (number? (:duration-ms %)))
+                  (:trace halted))))))
+
+(deftest duration-ms-in-error-traces
+  (testing "error trace segments include :duration-ms"
+    (let [result (fsm/run
+                  (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources _data] (/ 1 0))
+                                                   :dispatches [[::fsm/end (constantly true)]]}
+                                      ::fsm/error {:handler (fn [_resources fsm] fsm)}}}))]
+      (is (= :error (:status (first (:trace result)))))
+      (is (number? (:duration-ms (first (:trace result))))))))
 
 (deftest analyze-reachable-states
   (testing "identifies all reachable states from start"

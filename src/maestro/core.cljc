@@ -16,6 +16,14 @@
   [_resources fsm]
   (throw (ex-info "execution error" fsm)))
 
+(defn- current-time []
+  #?(:clj (System/nanoTime)
+     :cljs (js/performance.now)))
+
+(defn- elapsed-ms [start]
+  #?(:clj (/ (double (- (System/nanoTime) start)) 1000000.0)
+     :cljs (- (js/performance.now) start)))
+
 (defn normalize-handler
   [current-state-id handler async?]
   (if async?
@@ -75,14 +83,15 @@
 (defn- resolve-next-state
   "Resolves the next FSM state given dispatches and data.
    Returns the updated FSM map or throws if no dispatch matches."
-  [{:keys [current-state-id opts] :as fsm} resources dispatches post data]
+  [{:keys [current-state-id opts] :as fsm} resources dispatches post data start-time]
   (let [target-id (ffirst (drop-while (fn [[_target selector]] (not (selector data))) dispatches))]
     (if (get-in fsm [:fsm target-id])
       (-> fsm
           (update :trace add-trace-segment
                   (:max-trace opts)
-                  {:state-id current-state-id
-                   :status   :success})
+                  {:state-id    current-state-id
+                   :status      :success
+                   :duration-ms (elapsed-ms start-time)})
           (assoc :current-state-id target-id
                  :last-state-id current-state-id
                  :data data)
@@ -91,17 +100,16 @@
                                                          :target-state-id  target-id})))))
 
 (defn run-subscriptions! [data subscriptions]
-  (when subscriptions
-    (reduce
-     (fn [m [path {:keys [value handler] :as sub}]]
-       (let [new-value (get-in data path)]
-         (if (= new-value value)
-           (assoc m path sub)
-           (do
-             (handler path value new-value)
-             (assoc m path (assoc sub :value new-value))))))
-     {}
-     subscriptions)))
+  (reduce
+   (fn [m [path {:keys [value handler] :as sub}]]
+     (let [new-value (get-in data path)]
+       (if (= new-value value)
+         (assoc m path sub)
+         (do
+           (handler path value new-value)
+           (assoc m path (assoc sub :value new-value))))))
+   {}
+   subscriptions))
 
 (defn compile
   "compiles the FSM from the spec, compiled FSM should be passed to the run function"
@@ -169,32 +177,35 @@
           (handler resources fsm)
 
           :else
-          (let [next-state (volatile! nil)
+          (let [start-time (current-time)
+                next-state (volatile! nil)
                 error-state (volatile! nil)
                 callback (fn [result-data]
                            (try
                              (vreset! next-state
-                                      (resolve-next-state fsm resources dispatches post result-data))
+                                      (resolve-next-state fsm resources dispatches post result-data start-time))
                              (catch #?(:clj Exception :cljs :default) e
                                (vreset! error-state
                                         (-> (update fsm :trace add-trace-segment
                                                     max-trace
-                                                    {:state-id current-state-id
-                                                     :status   :error})
+                                                    {:state-id    current-state-id
+                                                     :status      :error
+                                                     :duration-ms (elapsed-ms start-time)})
                                             (assoc :current-state-id ::error :error e))))))
                 error-callback (fn [error]
                                  (vreset! error-state
                                           (-> (update fsm :trace add-trace-segment
                                                       max-trace
-                                                      {:state-id current-state-id
-                                                       :status   :error})
+                                                      {:state-id    current-state-id
+                                                       :status      :error
+                                                       :duration-ms (elapsed-ms start-time)})
                                               (assoc :current-state-id ::error :error error))))]
             (handler resources data callback error-callback)
             (if-let [err @error-state]
               (recur (pre err resources))
               (recur (pre @next-state resources)))))))))
 
-(defn- run-async
+(defn- execute-async
   "Async FSM execution using Promesa. Works on both CLJ (CompletableFuture)
    and CLJS (JS Promise). Returns a promise that resolves to the final result."
   [fsm-map max-trace subscriptions pre post resources current-state-id trace data]
@@ -206,35 +217,38 @@
                                    (run-subscriptions! data (:subscriptions opts)))]
                  (cond
                    (= ::end current-state-id)
-                   (p/resolved (handler resources fsm))
+                   (p/do (handler resources fsm))
 
                    (= ::halt current-state-id)
-                   (p/resolved (handler resources (assoc fsm :current-state-id last-state-id
-                                                         :last-state-id nil)))
+                   (p/do (handler resources (assoc fsm :current-state-id last-state-id
+                                                   :last-state-id nil)))
 
                    (= ::error current-state-id)
-                   (p/resolved (handler resources fsm))
+                   (p/do (handler resources fsm))
 
                    :else
-                   (let [d (p/deferred)]
+                   (let [start-time (current-time)
+                         d (p/deferred)]
                      (let [callback (fn [result-data]
                                       (try
                                         (let [next (resolve-next-state fsm resources dispatches
-                                                                       post result-data)]
+                                                                       post result-data start-time)]
                                           (p/resolve! d next))
                                         (catch #?(:clj Exception :cljs :default) e
                                           (p/resolve! d
                                                       (-> (update fsm :trace add-trace-segment
                                                                   max-trace
-                                                                  {:state-id current-state-id
-                                                                   :status   :error})
+                                                                  {:state-id    current-state-id
+                                                                   :status      :error
+                                                                   :duration-ms (elapsed-ms start-time)})
                                                           (assoc :current-state-id ::error :error e))))))
                            error-callback (fn [error]
                                             (p/resolve! d
                                                         (-> (update fsm :trace add-trace-segment
                                                                     max-trace
-                                                                    {:state-id current-state-id
-                                                                     :status   :error})
+                                                                    {:state-id    current-state-id
+                                                                     :status      :error
+                                                                     :duration-ms (elapsed-ms start-time)})
                                                             (assoc :current-state-id ::error
                                                                    :error error))))]
                        (handler resources data callback error-callback))
@@ -264,10 +278,23 @@
           trace []
           data {}}}]
    (if has-async?
-     (run-async fsm-map max-trace subscriptions pre post resources
-                current-state-id trace data)
+     (execute-async fsm-map max-trace subscriptions pre post resources
+                    current-state-id trace data)
      (run-sync fsm-map max-trace subscriptions pre post resources
                current-state-id trace data))))
+
+(defn run-async
+  "Executes the FSM asynchronously, returns a deref-able future (JVM) or
+   promise (CLJS) with the result. Always runs on a separate thread on JVM."
+  ([fsm]
+   (run-async fsm {} {}))
+  ([fsm resources]
+   (run-async fsm resources {}))
+  ([fsm resources state]
+   #?(:clj (future
+             (let [result (run fsm resources state)]
+               (if (p/promise? result) @result result)))
+      :cljs (p/do (run fsm resources state)))))
 
 (defn- bfs
   "Breadth-first search from start nodes using adjacency map.
