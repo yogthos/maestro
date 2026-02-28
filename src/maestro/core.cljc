@@ -276,12 +276,16 @@
      current-state-id :current-state-id
      :or {current-state-id ::start
           trace []
-          data {}}}]
-   (if has-async?
-     (execute-async fsm-map max-trace subscriptions pre post resources
-                    current-state-id trace data)
-     (run-sync fsm-map max-trace subscriptions pre post resources
-               current-state-id trace data))))
+          data {}}
+     :as state}]
+   (let [async? (if (contains? state :async?)
+                  (:async? state)
+                  has-async?)]
+     (if async?
+       (execute-async fsm-map max-trace subscriptions pre post resources
+                      current-state-id trace data)
+       (run-sync fsm-map max-trace subscriptions pre post resources
+                 current-state-id trace data)))))
 
 (defn run-async
   "Executes the FSM asynchronously, returns a deref-able future (JVM) or

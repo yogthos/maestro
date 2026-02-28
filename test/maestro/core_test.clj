@@ -317,6 +317,42 @@
       (is (= :error (:status (first (:trace result)))))
       (is (number? (:duration-ms (first (:trace result))))))))
 
+(deftest async-override-force-async
+  (testing "force async execution on a sync-compiled FSM via state map"
+    (let [result @(fsm/run
+                   (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data] (assoc data :x 1))
+                                                    :dispatches [[::fsm/end (constantly true)]]}}})
+                   {}
+                   {:async? true})]
+      (is (= {:x 1} result)))))
+
+(deftest async-override-force-sync
+  (testing "force sync execution on an async-compiled FSM via state map"
+    (let [result (fsm/run
+                  (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data]
+                                                                 (assoc data :x 1))
+                                                   :dispatches [[::fsm/end (constantly true)]]}}})
+                  {}
+                  {:async? false})]
+      (is (= {:x 1} result)))))
+
+(deftest async-override-default-unchanged
+  (testing "default behavior respects compile-time detection when :async? not in state"
+    (let [sync-result (fsm/run
+                       (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data] (assoc data :x 1))
+                                                        :dispatches [[::fsm/end (constantly true)]]}}})
+                       {}
+                       {})
+          async-result @(fsm/run
+                         (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data cb _err]
+                                                                        (cb (assoc data :x 1)))
+                                                          :async?     true
+                                                          :dispatches [[::fsm/end (constantly true)]]}}})
+                         {}
+                         {})]
+      (is (= {:x 1} sync-result))
+      (is (= {:x 1} async-result)))))
+
 (deftest analyze-reachable-states
   (testing "identifies all reachable states from start"
     (let [analysis (fsm/analyze
