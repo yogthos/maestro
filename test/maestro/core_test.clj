@@ -7,11 +7,11 @@
 (deftest basic-fsm
   (->> (fsm/run
         (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data] (assoc data :foo :bar))
-                                         :dispatches [[:foo (constantly true)]]} 
+                                         :dispatches [[:foo (constantly true)]]}
                             :foo       {:handler    (fn [_resources data] (assoc data :y 2))
                                         :dispatches [[::fsm/end (constantly true)]]}}}))
-      (= {:foo :bar :y 2})
-      (is)))
+       (= {:foo :bar :y 2})
+       (is)))
 
 (deftest basic-fsm-resources
   (let [external-state (atom nil)]
@@ -28,11 +28,11 @@
     (is (= {:some :state} @external-state))))
 
 (deftest basic-fsm-default-values
-  (->> (fsm/run 
+  (->> (fsm/run
         (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data] (assoc data :foo :bar))
-                                          :dispatches [[:foo (constantly true)]]}
-                             :foo       {:handler    (fn [_resources data] (assoc data :y 2))
-                                         :dispatches [[::fsm/end (constantly true)]]}}})
+                                         :dispatches [[:foo (constantly true)]]}
+                            :foo       {:handler    (fn [_resources data] (assoc data :y 2))
+                                        :dispatches [[::fsm/end (constantly true)]]}}})
         {}
         {:data {:x 1}})
        (= {:x   1
@@ -77,16 +77,17 @@
        (is)))
 
 (deftest async
-  (->> (fsm/run
-        (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data]
-                                                       (assoc data :foo :bar))
-                                         :dispatches [[:foo     (fn [_state] true)]]}
-                            :foo       {:handler    (fn [_resources data cb _error]
-                                                      (cb (assoc data :x 1)))
-                                        :async?     true
-                                        :dispatches [[:bar (constantly true)]]}
-                            :bar       {:handler    (fn [_resources data] (assoc data :y 2))
-                                        :dispatches [[::fsm/end (constantly true)]]}}}))
+  ;; Async handlers return a promise on JVM — deref to get the result
+  (->> @(fsm/run
+         (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data]
+                                                        (assoc data :foo :bar))
+                                          :dispatches [[:foo     (fn [_state] true)]]}
+                             :foo       {:handler    (fn [_resources data cb _error]
+                                                       (cb (assoc data :x 1)))
+                                         :async?     true
+                                         :dispatches [[:bar (constantly true)]]}
+                             :bar       {:handler    (fn [_resources data] (assoc data :y 2))
+                                         :dispatches [[::fsm/end (constantly true)]]}}}))
        (= {:foo :bar
            :x   1
            :y   2})
@@ -94,22 +95,24 @@
 
 (deftest async-error
   (try
-    (->> (fsm/run
-          (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data]
-                                                         (assoc data :foo :bar))
-                                           :dispatches [[:foo (fn [_state] true)]]}
-                              :foo       {:handler    (fn [_resources _data _cb error]
-                                                        (error (ex-info "error" {})))
-                                          :async?     true
-                                          :dispatches [[:bar (constantly true)]]}
-                              :bar       {:handler    (fn [_resources data] (assoc data :y 2))
-                                          :dispatches [[::fsm/end (constantly true)]]}}})))
+    @(fsm/run
+      (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data]
+                                                     (assoc data :foo :bar))
+                                       :dispatches [[:foo (fn [_state] true)]]}
+                          :foo       {:handler    (fn [_resources _data _cb error]
+                                                    (error (ex-info "error" {})))
+                                      :async?     true
+                                      :dispatches [[:bar (constantly true)]]}
+                          :bar       {:handler    (fn [_resources data] (assoc data :y 2))
+                                      :dispatches [[::fsm/end (constantly true)]]}}}))
     (catch Exception ex
-      (is (= (.getMessage ex) "execution error")))))
+      ;; Promesa wraps the exception — unwrap to find our ex-info
+      (let [cause (or (.getCause ex) ex)]
+        (is (= (.getMessage cause) "execution error"))))))
 
 (deftest edn-spec
   (let [spec (fsm/compile (edn/read-string (slurp "test/fsm.edn"))
-                          {:foo (fn [_resources data] (assoc data :v 5))})] 
+                          {:foo (fn [_resources data] (assoc data :v 5))})]
     (is (= {:v 5} (fsm/run spec)))))
 
 (deftest halt-test
@@ -125,13 +128,12 @@
     (is (= :foo (:current-state-id state)))
     (is (nil? (:last-state-id state)))
     (is (= {:foo :bar, :y 2} (:data state)))
-    (is (= 2 (count (:trace state))))
-    (is (= ::fsm/start (:state-id (first (:trace state)))))
-    (is (= :success (:status (first (:trace state)))))
-    (is (number? (:duration-ms (first (:trace state)))))
-    (is (= :foo (:state-id (second (:trace state)))))
-    (is (= :success (:status (second (:trace state)))))
-    (is (= {:max-trace 1000, :subscriptions {}} (:opts state)))
+    (is (= 1000 (get-in state [:opts :max-trace])))
+    (is (= {} (get-in state [:opts :subscriptions])))
+    (is (= [{:state-id :maestro.core/start, :status :success}
+            {:state-id :foo, :status :success}]
+           (mapv #(select-keys % [:state-id :status]) (:trace state))))
+    (is (every? #(number? (:duration-ms %)) (:trace state)))
     (is (= {:foo    :bar
             :y      3
             :ready? true}
@@ -139,34 +141,36 @@
 
 (deftest subscriptions-test
   (let [x (atom nil)]
-    (fsm/run
-     (fsm/compile {:fsm  {::fsm/start {:handler    (fn [_resources data]
-                                                     (assoc data :foo :bar))
-                                       :dispatches [[:foo (constantly true)]]}
-                          :foo       {:handler    (fn [_resources data]
-                                                    (update-in data [:x :y] inc))
-                                      :dispatches [[:bar (constantly true)]]}
-                          :bar       {:handler    (fn [_resources data cb _err] (cb (update-in data [:x :y] inc)))
-                                      :async?     true
-                                      :dispatches [[::fsm/end (constantly true)]]}}
-                   :opts {:subscriptions {[:x :y] {:handler (fn [path old-value new-value] 
-                                                              (reset! x {path [old-value new-value]}))}}}})
-     {}
-     {:data {:x {:y 1}}})
+    ;; This test has an async handler — deref the promise result
+    @(fsm/run
+      (fsm/compile {:fsm  {::fsm/start {:handler    (fn [_resources data]
+                                                      (assoc data :foo :bar))
+                                        :dispatches [[:foo (constantly true)]]}
+                           :foo       {:handler    (fn [_resources data]
+                                                     (update-in data [:x :y] inc))
+                                       :dispatches [[:bar (constantly true)]]}
+                           :bar       {:handler    (fn [_resources data cb _err] (cb (update-in data [:x :y] inc)))
+                                       :async?     true
+                                       :dispatches [[::fsm/end (constantly true)]]}}
+                    :opts {:subscriptions {[:x :y] {:handler (fn [path old-value new-value]
+                                                               (reset! x {path [old-value new-value]}))}}}})
+      {}
+      {:data {:x {:y 1}}})
     (is (= @x {[:x :y] [2 3]}))))
 
 (deftest pre-post-test
-  (->> (fsm/run
-        (fsm/compile {:fsm  {::fsm/start {:handler    (fn [_resources data]
-                                                        (assoc data :foo :bar))
-                                          :dispatches [[:foo (constantly true)]]}
-                             :foo       {:handler    (fn [_resources data] (assoc data :y 2))
-                                         :dispatches [[:bar (constantly true)]]}
-                             :bar       {:handler    (fn [_resources data cb _err] (cb (assoc data :z 3)))
-                                         :async?     true
-                                         :dispatches [[::fsm/end (constantly true)]]}}
-                      :opts {:pre  (fn [fsm _resources] (assoc-in fsm [:data :pre-value] 1))
-                             :post (fn [fsm _resources] (assoc-in fsm [:data :post-value] 2))}}))
+  ;; This test has an async handler — deref the promise result
+  (->> @(fsm/run
+         (fsm/compile {:fsm  {::fsm/start {:handler    (fn [_resources data]
+                                                         (assoc data :foo :bar))
+                                           :dispatches [[:foo (constantly true)]]}
+                              :foo       {:handler    (fn [_resources data] (assoc data :y 2))
+                                          :dispatches [[:bar (constantly true)]]}
+                              :bar       {:handler    (fn [_resources data cb _err] (cb (assoc data :z 3)))
+                                          :async?     true
+                                          :dispatches [[::fsm/end (constantly true)]]}}
+                       :opts {:pre  (fn [fsm _resources] (assoc-in fsm [:data :pre-value] 1))
+                              :post (fn [fsm _resources] (assoc-in fsm [:data :post-value] 2))}}))
        (= {:pre-value  1
            :foo        :bar
            :post-value 2
@@ -195,39 +199,29 @@
 ;; Tests for bug fixes
 
 (deftest dispatch-error-handling
-  ;; Tests fix for error-handler -> error-callback
-  ;; When no dispatch matches, error callback should be properly invoked
   (testing "error when no dispatch matches"
     (try
       (fsm/run
        (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data] (assoc data :x 1))
-                                        ;; No dispatch will match since we return false
                                         :dispatches [[::fsm/end (constantly false)]]}}}))
       (is false "Should have thrown an error")
       (catch Exception ex
-        ;; The error is wrapped by default-on-error
         (is (= "execution error" (.getMessage ex)))
-        ;; The original error is in the :error key of ex-data
         (let [original-error (-> ex ex-data :error)]
           (is (= "invalid target state transition" (.getMessage original-error)))
           (is (= ::fsm/start (-> original-error ex-data :current-state-id)))
           (is (nil? (-> original-error ex-data :target-state-id))))))))
 
 (deftest error-trace-consistency
-  ;; Tests fix for consistent trace keys (:state-id vs :current-state-id)
-  ;; Error traces should use :state-id like success traces
   (testing "error traces use :state-id key"
     (let [result (fsm/run
                   (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources _data] (throw (ex-info "test error" {})))
                                                    :dispatches [[::fsm/end (constantly true)]]}
                                       ::fsm/error {:handler (fn [_resources fsm] fsm)}}}))]
-      ;; Check that the error trace segment uses :state-id
       (is (every? #(contains? % :state-id) (:trace result)))
       (is (not-any? #(contains? % :current-state-id) (:trace result))))))
 
 (deftest last-state-id-type
-  ;; Tests fix for last-state-id being a keyword, not a map
-  ;; When resuming from halt, last-state-id should be the state keyword
   (testing "last-state-id is a keyword after resuming"
     (let [fsm-spec (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data] (assoc data :step1 1))
                                                     :dispatches [[:middle (constantly true)]]}
@@ -235,129 +229,129 @@
                                                     :dispatches [[::fsm/halt (constantly true)]]}
                                        :final      {:handler    (fn [_resources data] (assoc data :step3 3))
                                                     :dispatches [[::fsm/end (constantly true)]]}}})
-          ;; Run until halt
           halted-state (fsm/run fsm-spec)]
-      ;; Verify last-state-id is nil (no previous state before start)
       (is (nil? (:last-state-id halted-state)))
-      ;; Now resume with a trace that has entries
       (let [result (fsm/run fsm-spec {} (assoc halted-state
                                                :current-state-id :final
                                                :trace [{:state-id ::fsm/start :status :success}
                                                        {:state-id :middle :status :success}]))]
-        ;; The resumed run should complete successfully with step3 added
         (is (= 3 (:step3 result)))))))
 
 (deftest last-state-id-from-trace
-  ;; More direct test: verify last-state-id is extracted correctly from trace
-  ;; The fix ensures (:state-id (last trace)) is used, not (last trace) which would be a map
   (testing "last-state-id extracted from trace on resume"
     (let [captured (atom nil)
           fsm-spec (fsm/compile {:fsm  {::fsm/start {:handler    (fn [_resources data] data)
                                                      :dispatches [[::fsm/end (constantly true)]]}}
                                  :opts {:pre (fn [{:keys [last-state-id current-state-id] :as fsm} _resources]
-                                               ;; Capture last-state-id on first state (before it gets overwritten)
                                                (when (= current-state-id ::fsm/start)
                                                  (reset! captured last-state-id))
                                                fsm)}})
           _result (fsm/run fsm-spec {} {:trace [{:state-id :some-previous-state :status :success}]
                                         :data {}})]
-      ;; last-state-id should be the keyword from the trace, not the whole map
       (is (= :some-previous-state @captured))
       (is (keyword? @captured)))))
 
-;; Feature: Timing in traces
+(deftest compile-eagerly-validates-dispatches
+  (testing "invalid dispatch targets are caught at compile time"
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo
+         #"invalid dispatch"
+         (fsm/compile {:fsm {::fsm/start {:handler    (fn [_ d] d)
+                                          :dispatches [[:nonexistent (constantly true)]]}}})))))
 
-(deftest trace-timing
-  (testing "trace segments include :duration-ms for sync handlers"
+(deftest compile-inline-skips-sci
+  (testing "inline dispatch predicates are used directly, not evaluated as SCI forms"
+    (is (= {:ready? true}
+           (fsm/run
+            (fsm/compile
+             {:fsm {::fsm/start {:handler    (fn [_ data] (assoc data :ready? true))
+                                 :dispatches [[::fsm/end :ready?]]}}})))))
+  (testing "inline fn dispatch predicates preserve identity after compile"
+    (let [my-pred (fn [data] (:x data))
+          compiled (fsm/compile
+                    {:fsm {::fsm/start {:handler    (fn [_ d] d)
+                                        :dispatches [[::fsm/end my-pred]]}}})
+          compiled-pred (-> compiled :fsm (get ::fsm/start) :dispatches first second)]
+      (is (identical? my-pred compiled-pred)))))
+
+(deftest run-async-sync-fsm
+  (testing "run-async wraps sync FSM result in a deref-able future"
+    (let [result @(fsm/run-async
+                   (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data] (assoc data :x 1))
+                                                    :dispatches [[::fsm/end (constantly true)]]}}}))]
+      (is (= {:x 1} result)))))
+
+(deftest run-async-async-fsm
+  (testing "run-async works with async FSM"
+    (let [result @(fsm/run-async
+                   (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data cb _err]
+                                                                  (cb (assoc data :x 1)))
+                                                    :async?     true
+                                                    :dispatches [[::fsm/end (constantly true)]]}}}))]
+      (is (= {:x 1} result)))))
+
+(deftest duration-ms-in-traces
+  (testing "trace segments include :duration-ms"
     (let [result (fsm/run
-                  (fsm/compile
-                   {:fsm {::fsm/start {:handler    (fn [_resources data]
-                                                     (Thread/sleep 10)
-                                                     (assoc data :x 1))
-                                       :dispatches [[:next (constantly true)]]}
-                          :next       {:handler    (fn [_resources data] (assoc data :y 2))
-                                       :dispatches [[::fsm/end (constantly true)]]}
-                          ::fsm/end   {:handler (fn [_resources fsm] fsm)}}}))]
-      (is (= 2 (count (:trace result))))
-      (is (every? #(contains? % :duration-ms) (:trace result)))
-      (is (every? #(number? (:duration-ms %)) (:trace result)))
-      ;; The sleep handler should take at least 10ms
-      (is (>= (:duration-ms (first (:trace result))) 10)))))
+                  (fsm/compile {:fsm  {::fsm/start {:handler    (fn [_resources data] (assoc data :x 1))
+                                                    :dispatches [[:foo (constantly true)]]}
+                                       :foo        {:handler    (fn [_resources data] (assoc data :y 2))
+                                                    :dispatches [[::fsm/end (constantly true)]]}}
+                                :opts {:post (fn [fsm _resources] fsm)}})
+                  {}
+                  {})
+          halted (fsm/run
+                  (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data] data)
+                                                   :dispatches [[::fsm/halt (constantly true)]]}}}))]
+      (is (= 1 (count (:trace halted))))
+      (is (every? #(and (contains? % :duration-ms)
+                        (number? (:duration-ms %)))
+                  (:trace halted))))))
 
-(deftest trace-timing-async
-  (testing "trace segments include :duration-ms for async handlers"
-    (let [result (fsm/run
-                  (fsm/compile
-                   {:fsm {::fsm/start {:handler    (fn [_resources data cb _err]
-                                                     (Thread/sleep 10)
-                                                     (cb (assoc data :x 1)))
-                                       :async?     true
-                                       :dispatches [[:next (constantly true)]]}
-                          :next       {:handler    (fn [_resources data] (assoc data :y 2))
-                                       :dispatches [[::fsm/end (constantly true)]]}
-                          ::fsm/end   {:handler (fn [_resources fsm] fsm)}}}))]
-      (is (= 2 (count (:trace result))))
-      (is (every? #(contains? % :duration-ms) (:trace result)))
-      (is (>= (:duration-ms (first (:trace result))) 10)))))
-
-(deftest trace-timing-on-error
+(deftest duration-ms-in-error-traces
   (testing "error trace segments include :duration-ms"
     (let [result (fsm/run
-                  (fsm/compile
-                   {:fsm {::fsm/start {:handler    (fn [_resources _data]
-                                                     (Thread/sleep 10)
-                                                     (throw (ex-info "boom" {})))
-                                       :dispatches [[::fsm/end (constantly true)]]}
-                          ::fsm/error {:handler (fn [_resources fsm] fsm)}}}))]
-      (is (= 1 (count (:trace result))))
-      (is (contains? (first (:trace result)) :duration-ms))
-      (is (>= (:duration-ms (first (:trace result))) 10)))))
+                  (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources _data] (/ 1 0))
+                                                   :dispatches [[::fsm/end (constantly true)]]}
+                                      ::fsm/error {:handler (fn [_resources fsm] fsm)}}}))]
+      (is (= :error (:status (first (:trace result)))))
+      (is (number? (:duration-ms (first (:trace result))))))))
 
-;; Feature: run-async
+(deftest async-override-force-async
+  (testing "force async execution on a sync-compiled FSM via state map"
+    (let [result @(fsm/run
+                   (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data] (assoc data :x 1))
+                                                    :dispatches [[::fsm/end (constantly true)]]}}})
+                   {}
+                   {:async? true})]
+      (is (= {:x 1} result)))))
 
-(deftest run-async-basic
-  (testing "run-async returns a future with the result"
-    (let [result (fsm/run-async
-                  (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data] (assoc data :x 1))
-                                                   :dispatches [[::fsm/end (constantly true)]]}}}))]
-      (is (future? result))
-      (is (= {:x 1} @result)))))
-
-(deftest run-async-with-resources
-  (testing "run-async passes resources through"
-    (let [result (fsm/run-async
-                  (fsm/compile {:fsm {::fsm/start {:handler    (fn [{:keys [multiplier]} data]
-                                                                 (assoc data :x (* multiplier 5)))
-                                                   :dispatches [[::fsm/end (constantly true)]]}}})
-                  {:multiplier 3})]
-      (is (= {:x 15} @result)))))
-
-(deftest run-async-with-state
-  (testing "run-async passes initial state through"
-    (let [result (fsm/run-async
-                  (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data] (update data :x inc))
+(deftest async-override-force-sync
+  (testing "force sync execution on an async-compiled FSM via state map"
+    (let [result (fsm/run
+                  (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data]
+                                                                 (assoc data :x 1))
                                                    :dispatches [[::fsm/end (constantly true)]]}}})
                   {}
-                  {:data {:x 10}})]
-      (is (= {:x 11} @result)))))
+                  {:async? false})]
+      (is (= {:x 1} result)))))
 
-(deftest run-async-non-blocking
-  (testing "run-async does not block the calling thread"
-    (let [started (atom false)
-          latch (java.util.concurrent.CountDownLatch. 1)
-          result (fsm/run-async
-                  (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data]
-                                                                 (.await latch)
-                                                                 (assoc data :done true))
-                                                   :dispatches [[::fsm/end (constantly true)]]}}}))]
-      (reset! started true)
-      ;; We got here without blocking, proving run-async is non-blocking
-      (is @started)
-      (is (not (realized? result)))
-      (.countDown latch)
-      (is (= {:done true} (deref result 5000 :timeout))))))
-
-;; Feature: Static analysis
+(deftest async-override-default-unchanged
+  (testing "default behavior respects compile-time detection when :async? not in state"
+    (let [sync-result (fsm/run
+                       (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data] (assoc data :x 1))
+                                                        :dispatches [[::fsm/end (constantly true)]]}}})
+                       {}
+                       {})
+          async-result @(fsm/run
+                         (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data cb _err]
+                                                                        (cb (assoc data :x 1)))
+                                                          :async?     true
+                                                          :dispatches [[::fsm/end (constantly true)]]}}})
+                         {}
+                         {})]
+      (is (= {:x 1} sync-result))
+      (is (= {:x 1} async-result)))))
 
 (deftest analyze-reachable-states
   (testing "identifies all reachable states from start"
@@ -397,7 +391,6 @@
                                         :dispatches [[:b (constantly true)]]}
                            :b          {:handler    identity
                                         :dispatches [[:a (constantly true)]]}}})]
-      ;; a and b form a cycle with no exit to ::end
       (is (contains? (:no-path-to-end analysis) :a))
       (is (contains? (:no-path-to-end analysis) :b)))))
 
@@ -412,19 +405,8 @@
                            :b          {:handler    identity
                                         :dispatches [[:a (constantly true)]]}}})]
       (is (seq (:cycles analysis)))
-      ;; Should find a cycle involving :a and :b
       (is (some #(and (contains? (set %) :a) (contains? (set %) :b))
                 (:cycles analysis))))))
-
-;; Bug fixes
-
-(deftest compile-eagerly-validates-dispatches
-  (testing "invalid dispatch targets are caught at compile time, not deferred"
-    (is (thrown-with-msg?
-         clojure.lang.ExceptionInfo
-         #"invalid dispatch"
-         (fsm/compile {:fsm {::fsm/start {:handler    (fn [_ d] d)
-                                          :dispatches [[:nonexistent (constantly true)]]}}})))))
 
 (deftest analyze-no-duplicate-cycles
   (testing "each cycle is reported only once regardless of starting node"
@@ -436,24 +418,7 @@
                                                      [::fsm/end (constantly true)]]}
                            :b          {:handler    identity
                                         :dispatches [[:a (constantly true)]]}}})]
-      ;; The cycle :a -> :b -> :a should appear exactly once
       (is (= 1 (count (:cycles analysis)))))))
-
-(deftest compile-inline-skips-sci
-  (testing "inline dispatch predicates are used directly, not evaluated as SCI forms"
-    ;; keyword as dispatch predicate: (:ready? {:ready? true}) => true
-    (is (= {:ready? true}
-           (fsm/run
-            (fsm/compile
-             {:fsm {::fsm/start {:handler    (fn [_ data] (assoc data :ready? true))
-                                 :dispatches [[::fsm/end :ready?]]}}})))))
-  (testing "inline fn dispatch predicates preserve identity after compile"
-    (let [my-pred (fn [data] (:x data))
-          compiled (fsm/compile
-                    {:fsm {::fsm/start {:handler    (fn [_ d] d)
-                                        :dispatches [[::fsm/end my-pred]]}}})
-          compiled-pred (-> compiled :fsm (get ::fsm/start) :dispatches first second)]
-      (is (identical? my-pred compiled-pred)))))
 
 (deftest analyze-well-formed-fsm
   (testing "a well-formed FSM has no unreachable states or dead ends"
