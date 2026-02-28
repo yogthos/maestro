@@ -207,53 +207,60 @@
 
 (defn- execute-async
   "Async FSM execution using Promesa. Works on both CLJ (CompletableFuture)
-   and CLJS (JS Promise). Returns a promise that resolves to the final result."
+   and CLJS (JS Promise). Returns a promise that resolves to the final result.
+   Handlers that invoke their callback synchronously are iterated via loop/recur
+   to stay stack-safe; truly async handlers use p/then chaining."
   [fsm-map max-trace subscriptions pre post resources current-state-id trace data]
   (let [initial (make-initial-fsm fsm-map max-trace subscriptions post resources
                                   current-state-id trace data)
-        step (fn step [{:keys [data current-state-id last-state-id opts] :as fsm}]
-               (let [{:keys [handler dispatches]} (get-in fsm [:fsm current-state-id])
-                     fsm (assoc-in fsm [:opts :subscriptions]
-                                   (run-subscriptions! data (:subscriptions opts)))]
-                 (cond
-                   (= ::end current-state-id)
-                   (p/do (handler resources fsm))
+        step (fn step [fsm]
+               (loop [{:keys [data current-state-id last-state-id opts] :as fsm} fsm]
+                 (let [{:keys [handler dispatches]} (get-in fsm [:fsm current-state-id])
+                       fsm (assoc-in fsm [:opts :subscriptions]
+                                     (run-subscriptions! data (:subscriptions opts)))]
+                   (cond
+                     (= ::end current-state-id)
+                     (p/do (handler resources fsm))
 
-                   (= ::halt current-state-id)
-                   (p/do (handler resources (assoc fsm :current-state-id last-state-id
-                                                   :last-state-id nil)))
+                     (= ::halt current-state-id)
+                     (p/do (handler resources (assoc fsm :current-state-id last-state-id
+                                                     :last-state-id nil)))
 
-                   (= ::error current-state-id)
-                   (p/do (handler resources fsm))
+                     (= ::error current-state-id)
+                     (p/do (handler resources fsm))
 
-                   :else
-                   (let [start-time (current-time)
-                         d (p/deferred)]
-                     (let [callback (fn [result-data]
-                                      (try
-                                        (let [next (resolve-next-state fsm resources dispatches
-                                                                       post result-data start-time)]
-                                          (p/resolve! d next))
-                                        (catch #?(:clj Exception :cljs :default) e
-                                          (p/resolve! d
-                                                      (-> (update fsm :trace add-trace-segment
-                                                                  max-trace
-                                                                  {:state-id    current-state-id
-                                                                   :status      :error
-                                                                   :duration-ms (elapsed-ms start-time)})
-                                                          (assoc :current-state-id ::error :error e))))))
-                           error-callback (fn [error]
+                     :else
+                     (let [start-time (current-time)
+                           d (p/deferred)]
+                       (let [callback (fn [result-data]
+                                        (try
+                                          (let [next (resolve-next-state fsm resources dispatches
+                                                                         post result-data start-time)]
+                                            (p/resolve! d next))
+                                          (catch #?(:clj Exception :cljs :default) e
                                             (p/resolve! d
                                                         (-> (update fsm :trace add-trace-segment
                                                                     max-trace
                                                                     {:state-id    current-state-id
                                                                      :status      :error
                                                                      :duration-ms (elapsed-ms start-time)})
-                                                            (assoc :current-state-id ::error
-                                                                   :error error))))]
-                       (handler resources data callback error-callback))
-                     (p/then d (fn [next-fsm]
-                                 (step (pre next-fsm resources))))))))]
+                                                            (assoc :current-state-id ::error :error e))))))
+                             error-callback (fn [error]
+                                              (p/resolve! d
+                                                          (-> (update fsm :trace add-trace-segment
+                                                                      max-trace
+                                                                      {:state-id    current-state-id
+                                                                       :status      :error
+                                                                       :duration-ms (elapsed-ms start-time)})
+                                                              (assoc :current-state-id ::error
+                                                                     :error error))))]
+                         (handler resources data callback error-callback))
+                       ;; If handler resolved the deferred synchronously, loop
+                       ;; instead of chaining via p/then to stay stack-safe.
+                       (if (p/done? d)
+                         (recur (pre (p/extract d) resources))
+                         (p/then d (fn [next-fsm]
+                                     (step (pre next-fsm resources))))))))))]
     (step (pre initial resources))))
 
 (defn run
