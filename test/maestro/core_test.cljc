@@ -1,8 +1,12 @@
 (ns maestro.core-test
   (:refer-clojure :exclude [compile])
-  (:require [clojure.test :refer :all]
-            [clojure.edn :as edn]
-            [maestro.core :as fsm]))
+  (:require
+   #?(:clj  [clojure.test :refer [deftest testing is are]]
+      :cljs [cljs.test :refer [deftest testing is are async]])
+   #?(:clj  [clojure.edn :as edn]
+      :cljs [cljs.reader :as edn])
+   [maestro.core :as fsm]
+   [promesa.core :as p]))
 
 (deftest basic-fsm
   (->> (fsm/run
@@ -43,18 +47,18 @@
 (deftest error
   (try
     (->> (fsm/run
-          (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources _data] (/ 1 0))
+          (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources _data] (throw (ex-info "Divide by zero" {})))
                                            :dispatches [[::fsm/end (constantly true)]]}}})))
     (is (= 1 0))
-    (catch Exception ex
-      (is (= "execution error" (-> ex ex-data :error (.getMessage)))))))
+    (catch #?(:clj Exception :cljs :default) ex
+      (is (= "execution error" (-> ex ex-data :error ex-message))))))
 
 (deftest custom-error-handler
   (->> (fsm/run
-        (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources _data] (/ 1 0))
+        (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources _data] (throw (ex-info "Divide by zero" {})))
                                          :dispatches [[::fsm/end (constantly true)]]}
                             ::fsm/error {:handler (fn [_resources {:keys [error]}]
-                                                    (-> error ex-data :error (.getMessage)))}}}))
+                                                    (-> error ex-data :error ex-message))}}}))
        (= "Divide by zero")
        (is)))
 
@@ -76,43 +80,57 @@
        (= {:count 4})
        (is)))
 
-(deftest async
-  ;; Async handlers return a promise on JVM — deref to get the result
-  (->> @(fsm/run
-         (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data]
-                                                        (assoc data :foo :bar))
-                                          :dispatches [[:foo     (fn [_state] true)]]}
-                             :foo       {:handler    (fn [_resources data cb _error]
-                                                       (cb (assoc data :x 1)))
-                                         :async?     true
-                                         :dispatches [[:bar (constantly true)]]}
-                             :bar       {:handler    (fn [_resources data] (assoc data :y 2))
-                                         :dispatches [[::fsm/end (constantly true)]]}}}))
-       (= {:foo :bar
-           :x   1
-           :y   2})
-       (is)))
+(deftest async-test
+  (let [spec (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data]
+                                                            (assoc data :foo :bar))
+                                              :dispatches [[:foo (fn [_state] true)]]}
+                                 :foo       {:handler    (fn [_resources data cb _error]
+                                                           (cb (assoc data :x 1)))
+                                             :async?     true
+                                             :dispatches [[:bar (constantly true)]]}
+                                 :bar       {:handler    (fn [_resources data] (assoc data :y 2))
+                                             :dispatches [[::fsm/end (constantly true)]]}}})]
+    #?(:clj
+       (is (= {:foo :bar :x 1 :y 2} @(fsm/run spec)))
+       :cljs
+       (async done
+              (-> (fsm/run spec)
+                  (p/then (fn [result]
+                            (is (= {:foo :bar :x 1 :y 2} result))
+                            (done)))
+                  (p/catch (fn [err]
+                             (is (nil? err) (str "Unexpected error: " err))
+                             (done))))))))
 
-(deftest async-error
-  (try
-    @(fsm/run
-      (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data]
-                                                     (assoc data :foo :bar))
-                                       :dispatches [[:foo (fn [_state] true)]]}
-                          :foo       {:handler    (fn [_resources _data _cb error]
-                                                    (error (ex-info "error" {})))
-                                      :async?     true
-                                      :dispatches [[:bar (constantly true)]]}
-                          :bar       {:handler    (fn [_resources data] (assoc data :y 2))
-                                      :dispatches [[::fsm/end (constantly true)]]}}}))
-    (catch Exception ex
-      ;; Promesa wraps the exception — unwrap to find our ex-info
-      (let [cause (or (.getCause ex) ex)]
-        (is (= (.getMessage cause) "execution error"))))))
+(deftest async-error-test
+  (let [spec (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data]
+                                                            (assoc data :foo :bar))
+                                              :dispatches [[:foo (fn [_state] true)]]}
+                                 :foo       {:handler    (fn [_resources _data _cb error]
+                                                           (error (ex-info "error" {})))
+                                             :async?     true
+                                             :dispatches [[:bar (constantly true)]]}
+                                 :bar       {:handler    (fn [_resources data] (assoc data :y 2))
+                                             :dispatches [[::fsm/end (constantly true)]]}}})]
+    #?(:clj
+       (try
+         @(fsm/run spec)
+         (catch Exception ex
+           (let [cause (or (ex-cause ex) ex)]
+             (is (= (ex-message cause) "execution error")))))
+       :cljs
+       (async done
+              (-> (fsm/run spec)
+                  (p/catch (fn [ex]
+                             (is (= (ex-message ex) "execution error"))
+                             (done))))))))
 
 (deftest edn-spec
-  (let [spec (fsm/compile (edn/read-string (slurp "test/fsm.edn"))
-                          {:foo (fn [_resources data] (assoc data :v 5))})]
+  (let [spec (fsm/compile
+              (edn/read-string
+               #?(:clj  (slurp "test/fsm.edn")
+                  :cljs "{:fsm {:maestro.core/start {:handler :foo :dispatches [[:maestro.core/end (fn [{:keys [v]}] (= v 5))]]}}}"))
+              {:foo (fn [_resources data] (assoc data :v 5))})]
     (is (= {:v 5} (fsm/run spec)))))
 
 (deftest halt-test
@@ -140,43 +158,57 @@
            (fsm/run fsm {} (assoc-in state [:data :ready?] true))))))
 
 (deftest subscriptions-test
-  (let [x (atom nil)]
-    ;; This test has an async handler — deref the promise result
-    @(fsm/run
-      (fsm/compile {:fsm  {::fsm/start {:handler    (fn [_resources data]
-                                                      (assoc data :foo :bar))
-                                        :dispatches [[:foo (constantly true)]]}
-                           :foo       {:handler    (fn [_resources data]
-                                                     (update-in data [:x :y] inc))
-                                       :dispatches [[:bar (constantly true)]]}
-                           :bar       {:handler    (fn [_resources data cb _err] (cb (update-in data [:x :y] inc)))
-                                       :async?     true
-                                       :dispatches [[::fsm/end (constantly true)]]}}
-                    :opts {:subscriptions {[:x :y] {:handler (fn [path old-value new-value]
-                                                               (reset! x {path [old-value new-value]}))}}}})
-      {}
-      {:data {:x {:y 1}}})
-    (is (= @x {[:x :y] [2 3]}))))
+  (let [x    (atom nil)
+        spec (fsm/compile {:fsm  {::fsm/start {:handler    (fn [_resources data]
+                                                             (assoc data :foo :bar))
+                                               :dispatches [[:foo (constantly true)]]}
+                                  :foo       {:handler    (fn [_resources data]
+                                                            (update-in data [:x :y] inc))
+                                              :dispatches [[:bar (constantly true)]]}
+                                  :bar       {:handler    (fn [_resources data cb _err] (cb (update-in data [:x :y] inc)))
+                                              :async?     true
+                                              :dispatches [[::fsm/end (constantly true)]]}}
+                           :opts {:subscriptions {[:x :y] {:handler (fn [path old-value new-value]
+                                                                      (reset! x {path [old-value new-value]}))}}}})]
+    #?(:clj
+       (do
+         @(fsm/run spec {} {:data {:x {:y 1}}})
+         (is (= @x {[:x :y] [2 3]})))
+       :cljs
+       (async done
+              (-> (fsm/run spec {} {:data {:x {:y 1}}})
+                  (p/then (fn [_]
+                            (is (= @x {[:x :y] [2 3]}))
+                            (done)))
+                  (p/catch (fn [err]
+                             (is (nil? err) (str "Unexpected error: " err))
+                             (done))))))))
 
 (deftest pre-post-test
-  ;; This test has an async handler — deref the promise result
-  (->> @(fsm/run
-         (fsm/compile {:fsm  {::fsm/start {:handler    (fn [_resources data]
-                                                         (assoc data :foo :bar))
-                                           :dispatches [[:foo (constantly true)]]}
-                              :foo       {:handler    (fn [_resources data] (assoc data :y 2))
-                                          :dispatches [[:bar (constantly true)]]}
-                              :bar       {:handler    (fn [_resources data cb _err] (cb (assoc data :z 3)))
-                                          :async?     true
-                                          :dispatches [[::fsm/end (constantly true)]]}}
-                       :opts {:pre  (fn [fsm _resources] (assoc-in fsm [:data :pre-value] 1))
-                              :post (fn [fsm _resources] (assoc-in fsm [:data :post-value] 2))}}))
-       (= {:pre-value  1
-           :foo        :bar
-           :post-value 2
-           :y          2
-           :z          3})
-       (is))
+  (let [spec (fsm/compile {:fsm  {::fsm/start {:handler    (fn [_resources data]
+                                                             (assoc data :foo :bar))
+                                               :dispatches [[:foo (constantly true)]]}
+                                  :foo       {:handler    (fn [_resources data] (assoc data :y 2))
+                                              :dispatches [[:bar (constantly true)]]}
+                                  :bar       {:handler    (fn [_resources data cb _err] (cb (assoc data :z 3)))
+                                              :async?     true
+                                              :dispatches [[::fsm/end (constantly true)]]}}
+                           :opts {:pre  (fn [fsm _resources] (assoc-in fsm [:data :pre-value] 1))
+                                  :post (fn [fsm _resources] (assoc-in fsm [:data :post-value] 2))}})]
+    #?(:clj
+       (is (= {:pre-value 1 :foo :bar :post-value 2 :y 2 :z 3}
+              @(fsm/run spec)))
+       :cljs
+       (async done
+              (-> (fsm/run spec)
+                  (p/then (fn [result]
+                            (is (= {:pre-value 1 :foo :bar :post-value 2 :y 2 :z 3} result))
+                            (done)))
+                  (p/catch (fn [err]
+                             (is (nil? err) (str "Unexpected error: " err))
+                             (done))))))))
+
+(deftest pre-post-sync-test
   (->>
    (fsm/run
     (fsm/compile {:fsm  {::fsm/start {:handler    (fn [_resources data] (update data :x inc))
@@ -205,10 +237,10 @@
        (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data] (assoc data :x 1))
                                         :dispatches [[::fsm/end (constantly false)]]}}}))
       (is false "Should have thrown an error")
-      (catch Exception ex
-        (is (= "execution error" (.getMessage ex)))
+      (catch #?(:clj Exception :cljs :default) ex
+        (is (= "execution error" (ex-message ex)))
         (let [original-error (-> ex ex-data :error)]
-          (is (= "invalid target state transition" (.getMessage original-error)))
+          (is (= "invalid target state transition" (ex-message original-error)))
           (is (= ::fsm/start (-> original-error ex-data :current-state-id)))
           (is (nil? (-> original-error ex-data :target-state-id))))))))
 
@@ -254,7 +286,7 @@
 (deftest compile-eagerly-validates-dispatches
   (testing "invalid dispatch targets are caught at compile time"
     (is (thrown-with-msg?
-         clojure.lang.ExceptionInfo
+         #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo)
          #"invalid dispatch"
          (fsm/compile {:fsm {::fsm/start {:handler    (fn [_ d] d)
                                           :dispatches [[:nonexistent (constantly true)]]}}})))))
@@ -275,20 +307,46 @@
       (is (identical? my-pred compiled-pred)))))
 
 (deftest run-async-sync-fsm
-  (testing "run-async wraps sync FSM result in a deref-able future"
-    (let [result @(fsm/run-async
-                   (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data] (assoc data :x 1))
-                                                    :dispatches [[::fsm/end (constantly true)]]}}}))]
-      (is (= {:x 1} result)))))
+  (testing "run-async wraps sync FSM result in a deref-able future/promise"
+    #?(:clj
+       (let [result @(fsm/run-async
+                      (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data] (assoc data :x 1))
+                                                       :dispatches [[::fsm/end (constantly true)]]}}}))]
+         (is (= {:x 1} result)))
+       :cljs
+       (let [spec (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data] (assoc data :x 1))
+                                                   :dispatches [[::fsm/end (constantly true)]]}}})]
+         (async done
+                (-> (fsm/run-async spec)
+                    (p/then (fn [result]
+                              (is (= {:x 1} result))
+                              (done)))
+                    (p/catch (fn [err]
+                               (is (nil? err) (str "Unexpected error: " err))
+                               (done)))))))))
 
 (deftest run-async-async-fsm
   (testing "run-async works with async FSM"
-    (let [result @(fsm/run-async
-                   (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data cb _err]
-                                                                  (cb (assoc data :x 1)))
-                                                    :async?     true
-                                                    :dispatches [[::fsm/end (constantly true)]]}}}))]
-      (is (= {:x 1} result)))))
+    #?(:clj
+       (let [result @(fsm/run-async
+                      (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data cb _err]
+                                                                     (cb (assoc data :x 1)))
+                                                       :async?     true
+                                                       :dispatches [[::fsm/end (constantly true)]]}}}))]
+         (is (= {:x 1} result)))
+       :cljs
+       (let [spec (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data cb _err]
+                                                                 (cb (assoc data :x 1)))
+                                                   :async?     true
+                                                   :dispatches [[::fsm/end (constantly true)]]}}})]
+         (async done
+                (-> (fsm/run-async spec)
+                    (p/then (fn [result]
+                              (is (= {:x 1} result))
+                              (done)))
+                    (p/catch (fn [err]
+                               (is (nil? err) (str "Unexpected error: " err))
+                               (done)))))))))
 
 (deftest duration-ms-in-traces
   (testing "trace segments include :duration-ms"
@@ -311,7 +369,7 @@
 (deftest duration-ms-in-error-traces
   (testing "error trace segments include :duration-ms"
     (let [result (fsm/run
-                  (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources _data] (/ 1 0))
+                  (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources _data] (throw (ex-info "test error" {})))
                                                    :dispatches [[::fsm/end (constantly true)]]}
                                       ::fsm/error {:handler (fn [_resources fsm] fsm)}}}))]
       (is (= :error (:status (first (:trace result)))))
@@ -319,12 +377,24 @@
 
 (deftest async-override-force-async
   (testing "force async execution on a sync-compiled FSM via state map"
-    (let [result @(fsm/run
-                   (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data] (assoc data :x 1))
-                                                    :dispatches [[::fsm/end (constantly true)]]}}})
-                   {}
-                   {:async? true})]
-      (is (= {:x 1} result)))))
+    #?(:clj
+       (let [result @(fsm/run
+                      (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data] (assoc data :x 1))
+                                                       :dispatches [[::fsm/end (constantly true)]]}}})
+                      {}
+                      {:async? true})]
+         (is (= {:x 1} result)))
+       :cljs
+       (let [spec (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data] (assoc data :x 1))
+                                                   :dispatches [[::fsm/end (constantly true)]]}}})]
+         (async done
+                (-> (fsm/run spec {} {:async? true})
+                    (p/then (fn [result]
+                              (is (= {:x 1} result))
+                              (done)))
+                    (p/catch (fn [err]
+                               (is (nil? err) (str "Unexpected error: " err))
+                               (done)))))))))
 
 (deftest async-override-force-sync
   (testing "force sync execution on an async-compiled FSM via state map"
@@ -338,20 +408,24 @@
 
 (deftest async-override-default-unchanged
   (testing "default behavior respects compile-time detection when :async? not in state"
-    (let [sync-result (fsm/run
-                       (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data] (assoc data :x 1))
-                                                        :dispatches [[::fsm/end (constantly true)]]}}})
-                       {}
-                       {})
-          async-result @(fsm/run
-                         (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data cb _err]
-                                                                        (cb (assoc data :x 1)))
-                                                          :async?     true
-                                                          :dispatches [[::fsm/end (constantly true)]]}}})
-                         {}
-                         {})]
-      (is (= {:x 1} sync-result))
-      (is (= {:x 1} async-result)))))
+    (let [sync-spec  (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data] (assoc data :x 1))
+                                                      :dispatches [[::fsm/end (constantly true)]]}}})
+          async-spec (fsm/compile {:fsm {::fsm/start {:handler    (fn [_resources data cb _err]
+                                                                    (cb (assoc data :x 1)))
+                                                      :async?     true
+                                                      :dispatches [[::fsm/end (constantly true)]]}}})]
+      (is (= {:x 1} (fsm/run sync-spec {} {})))
+      #?(:clj
+         (is (= {:x 1} @(fsm/run async-spec {} {})))
+         :cljs
+         (async done
+                (-> (fsm/run async-spec {} {})
+                    (p/then (fn [result]
+                              (is (= {:x 1} result))
+                              (done)))
+                    (p/catch (fn [err]
+                               (is (nil? err) (str "Unexpected error: " err))
+                               (done)))))))))
 
 (deftest analyze-reachable-states
   (testing "identifies all reachable states from start"

@@ -2,7 +2,7 @@
 
 ![build status](https://github.com/yogthos/maestro/actions/workflows/main.yml/badge.svg)
 
-Maestro is a state machine runner for expressing workflows.
+Maestro is a state machine runner for expressing workflows. It works with both Clojure and ClojureScript.
 
 While the idea of writing applications in a pure functional style is appealing, it's not always clear how to separate side effects from pure computation in practice. Variations of Clean Architecture approach are often suggested as a way to accomplish this goal. This style dictates that IO should be handled in the outer layer that wraps pure computation core of the application.
 
@@ -133,33 +133,27 @@ Each trace segment contains `:state-id`, `:status` (`:success` or `:error`), and
                                    :dispatches [[:foo (constantly true)]]}
                       :foo       {:handler (fn [_resources data] (update data :x inc))
                                   :dispatches [[::fsm/end (constantly true)]]}}
-               :opts {:pre  (fn [{:keys [current-state-id]
-                                  :as   fsm}
-                                 _resources]
+               :opts {:pre  (fn [{:keys [current-state-id] :as fsm} _resources]
                               (println "pre" current-state-id)
                               (update-in fsm [:data :pre] (fnil conj [])
-                                         {:pre  current-state-id
-                                          :time (System/currentTimeMillis)}))
-                      :post (fn [{:keys [current-state-id]
-                                  :as   fsm}
-                                 _resources]
+                                         {:pre current-state-id}))
+                      :post (fn [{:keys [current-state-id] :as fsm} _resources]
                               (update-in fsm [:data :post] (fnil conj [])
-                                         {:post current-state-id
-                                          :time (System/currentTimeMillis)}))}})
+                                         {:post current-state-id}))}})
  {}
  {:data {:x 1}})
 => {:x 3
-    :pre [{:pre :maestro.core/start :time 1681995016315}
-          {:pre :foo, :time 1681995016316}
-          {:pre :maestro.core/end :time 1681995016316}]
-    :post [{:post :maestro.core/start :time 1681995016315}
-           {:post :foo, :time 1681995016316}
-           {:post :maestro.core/end :time 1681995016316}]}
+    :pre [{:pre :maestro.core/start}
+          {:pre :foo}
+          {:pre :maestro.core/end}]
+    :post [{:post :maestro.core/start}
+           {:post :foo}
+           {:post :maestro.core/end}]}
 ```
 
 ### Async Execution
 
-The `run-async` function executes the FSM in a separate thread and returns a future:
+The `run-async` function executes the FSM asynchronously and returns a deref-able future (JVM) or promise (ClojureScript):
 
 ```clojure
 (let [result (fsm/run-async

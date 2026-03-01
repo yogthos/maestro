@@ -5,3 +5,6 @@ output.calva-repl
 .lsp
 .nrepl-port
 .DS_Store
+node_modules/
+out/
+.shadow-cljs/
